@@ -1,0 +1,8 @@
+node_modules/
+raw_*
+shot_*
+*.log
+ref.jpg
+test_rt.mjs
+*.py
+.env
