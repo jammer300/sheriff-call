@@ -7,3 +7,9 @@ test_rt.mjs
 *.py
 .env
 refs/
+PARENT_KEY.txt
+data/
+__pycache__/
+*.y4m
+*.mjpeg
+shots/

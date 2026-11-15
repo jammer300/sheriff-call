@@ -14,14 +14,15 @@
   <!-- scene -->
   <div id="scene">
     <div id="bg"></div>
-    <div id="sheriffWrap">
+    <div id="sheriffWrap"><div id="walker"><div id="react">
       <div id="sheriff">
         <img src="c/sheriff/base.png" id="baseImg" class="base" alt="" draggable="false">
         <img src="c/sheriff/blink.png" id="blink" class="ov" alt="" draggable="false">
         <img src="c/sheriff/mouth.png" id="mouth" class="ov" alt="" draggable="false">
       </div>
-    </div>
-    <img id="desk" src="desk.png" alt="" draggable="false">
+    </div></div><div id="tapZone"></div></div>
+    <img id="desk" src="rooms/office_fg.png" alt="" draggable="false">
+    <div id="board"></div>
     <div id="listen" class="bubble">👂 <span id="listenName">Шериф</span> слушает…</div>
   </div>
 
@@ -31,6 +32,22 @@
   </div>
   <div id="pip"><video id="selfie" autoplay playsinline muted></video><div class="pipLabel">Я</div></div>
   <div id="caption"></div>
+  <div id="fx"></div>
+  <div id="games" class="bar">
+    <button data-g="count" title="Счёт">🔢</button>
+    <button data-g="letters" title="Буквы">🔤</button>
+    <button data-g="words" title="Слова">🐘</button>
+    <button data-g="five" title="Дай пять">✋</button>
+    <button data-g="colors" title="Цвета">🎨</button>
+    <button data-g="story" title="Приключение">📖</button>
+  </div>
+  <div id="rooms" class="bar">
+    <button data-r="office" title="Кабинет">🏢</button>
+    <button data-r="garage" title="Гараж">🚓</button>
+    <button data-r="playroom" title="Игровая">🧸</button>
+    <button data-r="kitchen" title="Кухня">🍎</button>
+  </div>
+  <button id="lookBtn">👀 <span>Покажи</span></button>
   <div id="controls">
     <button id="ccBtn" class="round small" title="Субтитры">💬</button>
     <button id="hangBtn" class="round red" title="Положить трубку">

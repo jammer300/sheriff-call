@@ -4,7 +4,7 @@ const $ = (id) => document.getElementById(id);
 const app = $("app");
 const params = new URLSearchParams(location.search);
 const DEBUG = params.has("debug");
-if (DEBUG) app.classList.add("debug");
+if (DEBUG && params.get("debug") !== "quiet") app.classList.add("debug");
 const BARGE_RMS = parseFloat(params.get("barge") || "0.06");
 const MAX_CALL_MS = 20 * 60 * 1000;
 const RATE = 24000;
@@ -29,7 +29,7 @@ function applyChar(c) {
 }
 const S = window.__sheriff = {
   state: "idle", events: [], audioChunks: 0, audioSamples: 0, transcripts: [], userTranscripts: [], errors: [],
-  sessionCreated: false, sessionUpdated: false, speechStarted: 0,
+  sessionCreated: false, sessionUpdated: false, speechStarted: 0, fnCalls: [], looks: [], notes: [], room: "office",
 };
 function log(...a) {
   const line = a.map((x) => (typeof x === "string" ? x : JSON.stringify(x))).join(" ");
@@ -203,7 +203,9 @@ async function connectWithRetry(isReconnect) {
   }
   throw last;
 }
+let respActive = false;
 function sayAsUser(text) {
+  if (!ws) return;
   ws.send(JSON.stringify({ type: "conversation.item.create", item: { type: "message", role: "user", content: [{ type: "input_text", text }] } }));
   ws.send(JSON.stringify({ type: "response.create" }));
 }
@@ -217,7 +219,7 @@ function attach(sock, isReconnect) {
       case "session.updated":
         if (firstUpdate) S.turn = e.session && e.session.turn_detection;
         if (firstUpdate) {
-          firstUpdate = false; S.sessionUpdated = true;
+          firstUpdate = false; S.sessionUpdated = true; respActive = false; pendingFn = 0; needContinue = false;
           if (S.state === "ringing") enterCall();
           sayAsUser(isReconnect
             ? "(Служебная заметка, не читай вслух: связь на секунду прервалась и восстановилась. Весело скажи, что связь вернулась, и продолжай болтать с девочкой.)"
@@ -235,7 +237,11 @@ function attach(sock, isReconnect) {
         break;
       case "input_audio_buffer.speech_stopped": app.classList.remove("listening"); break;
       case "conversation.item.input_audio_transcription.completed": S.userTranscripts.push(e.transcript); log("child:", e.transcript); break;
-      case "response.created": captionText = ""; break;
+      case "response.created": captionText = ""; respActive = true; break;
+      case "response.done": respActive = false; onResponseDone(e); break;
+      case "response.function_call_arguments.done": onFunctionCall(e); break;
+      case "x.look.done": lookDone(e); break;
+      case "x.look.result": S.looks.push(e); break;
       case "response.output_item.added": curItem = e.item && e.item.id; curItemStart = Math.max(ctx.currentTime, nextPlay); break;
       case "response.output_audio.delta": app.classList.remove("listening"); playPcm16(e.delta); break;
       case "response.output_audio_transcript.delta": captionText += e.delta || ""; showCaption(captionText); break;
@@ -265,6 +271,7 @@ async function startCall(c) {
   if (typeof c === "string" && CHARS[c]) applyChar(c);
   $("err").textContent = "";
   hangingUp = false; reconnects = 0; goodbyeSent = false;
+  setRoom("office", true); hideBoard();
   ctx = ctx || new (window.AudioContext || window.webkitAudioContext)();
   if (ctx.state === "suspended") ctx.resume();
   if (!outGain) {
@@ -315,7 +322,7 @@ function cleanup() {
   micStream = camStream = null; $("selfie").srcObject = null;
   if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }
   app.classList.remove("listening");
-  $("caption").innerHTML = "";
+  $("caption").innerHTML = ""; hideBoard();
 }
 function hangUp() {
   hangingUp = true; cleanup(); blip(700, 300);
@@ -335,6 +342,236 @@ $("cancelBtn").addEventListener("click", hangUp);
 $("micBtn").addEventListener("click", () => { muted = !muted; $("micBtn").classList.toggle("off", muted); $("micBtn").textContent = muted ? "🔇" : "🎤"; });
 $("ccBtn").addEventListener("click", () => app.classList.toggle("cc"));
 if (params.has("cc")) app.classList.add("cc");
+
+/* ---------------- notes from the app, tool calls, continuation ---------------- */
+let noteQueue = [], pendingFn = 0, needContinue = false, kicking = false;
+const waitPlayback = () => new Promise((res) => { const t0 = Date.now(); const iv = setInterval(() => { if (!isSpeaking() || Date.now() - t0 > 15000) { clearInterval(iv); res(); } }, 100); });
+function interrupt() {
+  if (!ws) return;
+  if (respActive) ws.send(JSON.stringify({ type: "response.cancel" }));
+  if (isSpeaking()) {
+    const playedMs = Math.max(0, Math.round((ctx.currentTime - curItemStart) * 1000));
+    stopPlayback();
+    if (curItem) ws.send(JSON.stringify({ type: "conversation.item.truncate", item_id: curItem, content_index: 0, audio_end_ms: playedMs }));
+  }
+}
+function note(text, opts = {}) {
+  if (!ws || !S.sessionUpdated) return false;
+  const busy = respActive || isSpeaking() || pendingFn > 0;
+  if (busy && opts.skipIfBusy) return false;
+  if (busy && opts.interrupt) interrupt();
+  S.notes.push(text);
+  noteQueue.push("(Служебная заметка, не читай вслух: " + text + ")");
+  kick(); return true;
+}
+async function kick() {
+  if (!ws || respActive || pendingFn > 0 || kicking) return;
+  if (!needContinue && !noteQueue.length) return;
+  kicking = true;
+  if (!noteQueue.length) await waitPlayback();
+  kicking = false;
+  if (!ws || respActive || pendingFn > 0) return;
+  const notes = noteQueue.splice(0); needContinue = false;
+  if (notes.length) ws.send(JSON.stringify({ type: "conversation.item.create", item: { type: "message", role: "user", content: [{ type: "input_text", text: notes.join("\n") }] } }));
+  ws.send(JSON.stringify({ type: "response.create" })); respActive = true;
+}
+function onResponseDone() { kick(); }
+function fnOutput(callId, out) {
+  if (ws) ws.send(JSON.stringify({ type: "conversation.item.create", item: { type: "function_call_output", call_id: callId, output: JSON.stringify(out) } }));
+}
+function onFunctionCall(e) {
+  let a = {}; try { a = JSON.parse(e.arguments || "{}"); } catch (err) {}
+  S.fnCalls.push({ name: e.name, args: a, t: Date.now() }); log("tool", e.name, a);
+  needContinue = true;
+  if (e.name === "look_at_camera") { pendingFn++; doLook(e.call_id); return; }
+  let out;
+  try { out = runTool(e.name, a); } catch (err) { out = { ok: false, error: String(err) }; }
+  fnOutput(e.call_id, out);
+}
+const SHOWN = "It is on her screen now. Continue naturally; do not repeat what you already said.";
+function runTool(name, a) {
+  switch (name) {
+    case "show_count": { const n = Math.max(1, Math.min(10, parseInt(a.count, 10) || 3)); boardCount(oneEmoji(a.emoji, "⭐"), n); return { ok: true, shown: n, note: SHOWN + " She can tap the objects to count them." }; }
+    case "show_letter": boardLetter(String(a.letter || "А").trim().slice(0, 1).toUpperCase(), String(a.word || "").slice(0, 24), oneEmoji(a.emoji, "")); return { ok: true, note: SHOWN };
+    case "show_picture": boardPicture(oneEmoji(a.emoji, "⭐"), String(a.ru || "").slice(0, 24), String(a.en || "").slice(0, 24)); return { ok: true, note: SHOWN };
+    case "show_high_five": boardFive(); return { ok: true, note: "A big paw is on her screen. Ask her to tap it and wait; you will get a note when she does." };
+    case "show_colors": { const cs = (Array.isArray(a.colors) ? a.colors : []).filter((c) => COLORS[c]).slice(0, 4); boardColors(cs.length >= 2 ? cs : ["красный", "синий", "жёлтый"]); return { ok: true, note: "Colored circles are on her screen. Ask her to tap one; you will get a note which one she tapped." }; }
+    case "celebrate": celebrate(); return { ok: true, note: "Confetti is flying on her screen!" };
+    case "clear_screen": hideBoard(); return { ok: true };
+    case "go_to_room": { const r = ROOMS[a.room] ? a.room : "office"; setRoom(r); return { ok: true, now_in: r, note: "You walked together into the " + r + ". Say one fun sentence about what is here." }; }
+  }
+  return { ok: false, error: "unknown tool" };
+}
+function oneEmoji(s, d) {
+  s = String(s || "").trim(); if (!s) return d;
+  if (window.Intl && Intl.Segmenter) { const g = [...new Intl.Segmenter().segment(s)][0]; return g ? g.segment : d; }
+  return Array.from(s).slice(0, 2).join("");
+}
+
+/* ---------------- camera look ---------------- */
+let lookBusy = false;
+function grabFrame() {
+  const v = $("selfie");
+  if (!camStream || !v.videoWidth) return null;
+  const sc = Math.min(1, 512 / Math.max(v.videoWidth, v.videoHeight));
+  const c = document.createElement("canvas"); c.width = Math.round(v.videoWidth * sc); c.height = Math.round(v.videoHeight * sc);
+  c.getContext("2d").drawImage(v, 0, 0, c.width, c.height);
+  return c.toDataURL("image/jpeg", 0.72).split(",")[1];
+}
+function doLook(callId) {
+  lookBusy = true; $("lookBtn").classList.add("busy");
+  const img = grabFrame();
+  if (img) { const f = document.createElement("div"); f.className = "flash"; $("pip").appendChild(f); setTimeout(() => f.remove(), 400); sfx("shutter"); }
+  S.lookSentAt = performance.now();
+  ws && ws.send(JSON.stringify({ type: "x.look", call_id: callId, image: img || undefined, reason: img ? undefined : "camera is off — ask her to tell you what it is" }));
+}
+function lookDone(e) {
+  lookBusy = false; $("lookBtn").classList.remove("busy");
+  S.lookRoundTripMs = Math.round(performance.now() - (S.lookSentAt || 0));
+  if (e.call_id) pendingFn = Math.max(0, pendingFn - 1);
+  needContinue = true; kick();
+}
+if (DEBUG) S.say = (t) => { if (respActive || isSpeaking()) interrupt(); noteQueue.push(t); kick(); };
+$("lookBtn").addEventListener("click", () => {
+  if (!ws || !S.sessionUpdated || lookBusy) return;
+  if (respActive || isSpeaking()) interrupt();
+  doLook(null);
+});
+
+/* ---------------- board (game visuals) ---------------- */
+const COLORS = { "красный": "#ef4444", "оранжевый": "#f97316", "жёлтый": "#facc15", "зелёный": "#22c55e", "голубой": "#38bdf8", "синий": "#2563eb", "фиолетовый": "#8b5cf6", "розовый": "#f472b6", "белый": "#ffffff", "чёрный": "#1f2937", "коричневый": "#92400e" };
+const board = $("board");
+function el(tag, cls, text) { const x = document.createElement(tag); if (cls) x.className = cls; if (text != null) x.textContent = text; return x; }
+function showBoard(...kids) { board.innerHTML = ""; kids.forEach((k) => board.appendChild(k)); app.classList.remove("board-on"); void board.offsetWidth; app.classList.add("board-on"); S.board = board.textContent; sfx("pop"); }
+function hideBoard() { app.classList.remove("board-on"); board.innerHTML = ""; S.board = ""; }
+function boardCount(emoji, n) {
+  const items = el("div", "items"); let counted = 0;
+  for (let i = 0; i < n; i++) { const sp = el("span", null, emoji); sp.addEventListener("click", () => { if (sp.classList.contains("on")) return; sp.dataset.n = ++counted; sp.classList.add("on"); sfx("pop", counted); }); items.appendChild(sp); }
+  showBoard(items, el("div", "q", "Сколько?"));
+}
+function boardLetter(L, word, emoji) {
+  const w = el("div", "word"); if (word) { const f = el("span", null, word[0]); f.style.color = "#e11d48"; w.appendChild(f); w.appendChild(document.createTextNode(word.slice(1))); }
+  showBoard(el("div", "letter", L + " " + L.toLowerCase()), el("div", "pic", emoji), w);
+}
+function boardPicture(emoji, ru, en) { showBoard(el("div", "pic", emoji), el("div", "word", ru), el("div", "en", en || "")); }
+function boardFive() {
+  const p = el("div", "paw", "🐾");
+  p.addEventListener("click", () => {
+    if (p.classList.contains("hit")) return;
+    p.classList.add("hit"); sfx("clap"); celebrate(18);
+    S.highFives = (S.highFives || 0) + 1;
+    note("девочка дала тебе пять — хлопнула по твоей лапе на экране! Радостно отреагируй одной короткой фразой.", { interrupt: true });
+    setTimeout(() => p.classList.remove("hit"), 700);
+  });
+  showBoard(p, el("div", "q", "Дай пять!"));
+}
+function boardColors(cs) {
+  const d = el("div", "dots");
+  cs.forEach((c) => { const b = el("div", "dot"); b.style.background = COLORS[c]; b.addEventListener("click", () => {
+    d.querySelectorAll(".dot").forEach((x) => x.classList.remove("sel")); b.classList.add("sel"); sfx("pop");
+    S.colorTaps = (S.colorTaps || []).concat(c);
+    note(`девочка нажала на кружок цвета «${c}».`, { interrupt: true });
+  }); d.appendChild(b); });
+  showBoard(d);
+}
+function celebrate(n = 44) {
+  const fx = $("fx"); const em = ["🎉", "⭐", "🌟", "💖", "🎈", "✨", "🐾"];
+  for (let i = 0; i < n; i++) {
+    const c = el("i", null, em[i % em.length]); c.style.left = Math.random() * 100 + "%";
+    c.style.animationDuration = 1.6 + Math.random() * 1.6 + "s"; c.style.animationDelay = Math.random() * 0.5 + "s"; c.style.fontSize = 24 + Math.random() * 30 + "px";
+    fx.appendChild(c); setTimeout(() => c.remove(), 4000);
+  }
+  sfx("fanfare"); S.celebrations = (S.celebrations || 0) + 1;
+}
+
+/* ---------------- sounds ---------------- */
+function tone(f, t0, d, type = "sine", vol = 0.14, f2) {
+  const o = ctx.createOscillator(), g = ctx.createGain(); o.type = type;
+  o.frequency.setValueAtTime(f, t0); if (f2) o.frequency.exponentialRampToValueAtTime(f2, t0 + d);
+  g.gain.setValueAtTime(vol, t0); g.gain.exponentialRampToValueAtTime(0.001, t0 + d);
+  o.connect(g); g.connect(ctx.destination); o.start(t0); o.stop(t0 + d + 0.02);
+}
+function sfx(kind, k) {
+  if (!ctx) return; const t = ctx.currentTime;
+  if (kind === "pop") tone(500 + (k || 0) * 60, t, 0.12, "sine", 0.16, 900 + (k || 0) * 60);
+  else if (kind === "fanfare") [523, 659, 784, 1047].forEach((f, i) => tone(f, t + i * 0.11, 0.25, "triangle", 0.12));
+  else if (kind === "boing") tone(180, t, 0.4, "sine", 0.2, 620);
+  else if (kind === "giggle") [880, 990, 880, 1040, 920].forEach((f, i) => tone(f, t + i * 0.08, 0.07, "square", 0.04));
+  else if (kind === "wiggle") [400, 520, 400, 520].forEach((f, i) => tone(f, t + i * 0.1, 0.09, "triangle", 0.1));
+  else if (kind === "whoosh") tone(900, t, 0.5, "sawtooth", 0.03, 120);
+  else if (kind === "shutter") { tone(1500, t, 0.05, "square", 0.05); tone(900, t + 0.06, 0.05, "square", 0.05); }
+  else if (kind === "clap") {
+    const b = ctx.createBuffer(1, ctx.sampleRate * 0.15, ctx.sampleRate), d = b.getChannelData(0);
+    for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * Math.exp(-i / (ctx.sampleRate * 0.03));
+    const s = ctx.createBufferSource(), g = ctx.createGain(); g.gain.value = 0.5; s.buffer = b; s.connect(g); g.connect(ctx.destination); s.start(t);
+  }
+}
+
+/* ---------------- rooms ---------------- */
+const ROOMS = { office: { name: "кабинет" }, garage: { name: "гараж" }, playroom: { name: "игровую" }, kitchen: { name: "кухню" } };
+Object.keys(ROOMS).forEach((r) => { const i = new Image(); i.src = `rooms/${r}.jpg`; const j = new Image(); j.src = `rooms/${r}_fg.png`; });
+let roomBusy = false;
+function paintRoom(r) {
+  $("bg").style.backgroundImage = `url(rooms/${r}.jpg)`; $("desk").src = `rooms/${r}_fg.png`;
+  document.querySelectorAll("#rooms button").forEach((b) => b.classList.toggle("cur", b.dataset.r === r));
+}
+function setRoom(r, instant) {
+  if (!ROOMS[r]) return;
+  if (instant || S.state !== "incall") { S.room = r; paintRoom(r); return; }
+  if (r === S.room || roomBusy) return;
+  roomBusy = true; S.room = r; S.roomChanges = (S.roomChanges || 0) + 1; hideBoard();
+  const w = $("walker"), d = $("desk");
+  app.classList.add("walking"); sfx("whoosh");
+  w.classList.add("out"); d.classList.add("out");
+  setTimeout(() => {
+    $("bg").classList.add("fade");
+    setTimeout(() => {
+      paintRoom(r); $("bg").classList.remove("fade");
+      w.classList.remove("out"); d.classList.remove("out"); w.classList.add("in"); d.classList.add("in");
+      void w.offsetWidth; w.classList.remove("in"); d.classList.remove("in");
+      setTimeout(() => { app.classList.remove("walking"); roomBusy = false; }, 600);
+    }, 250);
+  }, 560);
+}
+document.querySelectorAll("#rooms button").forEach((b) => b.addEventListener("click", () => {
+  const r = b.dataset.r; if (r === S.room || roomBusy) return;
+  setRoom(r);
+  note(`девочка нажала кнопку — вы вместе пришли в ${ROOMS[r].name}. Весело скажи об этом одной фразой и предложи, что тут можно поделать.`, { interrupt: true });
+}));
+const GAME_NOTES = {
+  count: "девочка нажала кнопку игры «Счёт» 🔢. Начни игру: вызови show_count и спроси «Сколько?».",
+  letters: "девочка нажала кнопку игры «Буквы» 🔤. Начни игру: вызови show_letter, назови букву и слово, попроси повторить.",
+  words: "девочка нажала кнопку игры «Слова» 🐘. Начни игру: вызови show_picture и спроси «Что это?».",
+  five: "девочка нажала кнопку «Дай пять!» ✋. Вызови show_high_five и попроси её хлопнуть по лапе на экране.",
+  colors: "девочка нажала кнопку игры «Цвета» 🎨. Вызови show_colors и попроси нажать на один цвет.",
+  story: "девочка нажала кнопку «Приключение» 📖. Начни большое полицейское приключение (или продолжи незаконченное из памяти), сделай её младшим офицером и спроси, что делать дальше.",
+};
+document.querySelectorAll("#games button").forEach((b) => b.addEventListener("click", () => {
+  const g = b.dataset.g; let extra = "";
+  if (g !== "story" && S.room !== "playroom") { setRoom("playroom"); extra = " Вы сейчас перешли в игровую."; }
+  note(GAME_NOTES[g] + extra, { interrupt: true });
+}));
+
+/* ---------------- touch the character ---------------- */
+let lastTap = 0, lastTapNote = 0;
+$("tapZone").addEventListener("pointerdown", (ev) => {
+  if (S.state !== "incall" || roomBusy) return;
+  const now = Date.now(); if (now - lastTap < 700) return; lastTap = now;
+  const r = $("sheriffWrap").getBoundingClientRect(); const y = (ev.clientY - r.top) / r.height;
+  const zone = y < 0.3 ? "cap" : y < 0.58 ? "nose" : "belly";
+  const fx = { cap: ["boing", "boing", "⭐"], nose: ["giggle", "giggle", "😆"], belly: ["wiggle", "wiggle", "💛"] }[zone];
+  app.classList.remove("boing", "giggle", "wiggle"); void app.offsetWidth; app.classList.add(fx[0]);
+  setTimeout(() => app.classList.remove(fx[0]), 1000);
+  sfx(fx[1]);
+  const s = el("div", "tapfx", fx[2]); s.style.left = ev.clientX + "px"; s.style.top = ev.clientY + "px"; document.body.appendChild(s); setTimeout(() => s.remove(), 1200);
+  S.taps = (S.taps || []).concat(zone);
+  if (now - lastTapNote > 4000) {
+    const txt = { cap: "девочка нажала тебе на шапку (фуражку) на экране — ты подпрыгнул(а). Отреагируй одной короткой смешной фразой.",
+      nose: "девочка нажала тебе на нос на экране — тебе щекотно! Хихикни одной короткой фразой, например «Хи-хи, щекотно!».",
+      belly: "девочка пощекотала тебе животик на экране — засмейся одной короткой фразой." }[zone];
+    if (!noteQueue.some((n) => n.includes("на экране — "))) { note(txt); lastTapNote = now; }
+  }
+});
 
 /* ---------------- animation ---------------- */
 const sheriff = $("sheriff"), mouth = $("mouth"), blinkEl = $("blink");
