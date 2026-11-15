@@ -88,7 +88,7 @@ async function grokText(messages, max_tokens = 600, json = false) {
 async function summarize(char, transcript) {
   const text = transcript.map((t) => `${t.r === "child" ? "Девочка" : t.r === "fn" ? "[экран]" : CHARS[char].name}: ${t.t}`).join("\n").slice(-14000);
   const d = await grokText([
-    { role: "system", content: "Ты помогаешь родителям вести дневник звонков их 4-летней дочки Лилии мультяшному герою (полицейской собаке). По расшифровке звонка (распознавание речи ребёнка может быть неточным) верни JSON:\n{\"summary\": \"2–3 коротких предложения по-русски: о чём говорили, во что играли\", \"questions\": [\"вопросы, которые САМА девочка задала герою, дословно или близко\"], \"facts\": [\"новые факты, которые девочка рассказала о себе (что делала, что любит, планы), коротко\"], \"story\": {\"title\": \"название приключения, если герой рассказывал историю\", \"status\": \"ongoing|finished|none\", \"where_we_stopped\": \"на чём остановились, 1–2 предложения\", \"next\": \"что может быть дальше\"}, \"games\": [\"в какие игры играли\"], \"mood\": \"настроение девочки одним-двумя словами\"}\nНе выдумывай. Пустые списки, если ничего нет." },
+    { role: "system", content: "Ты помогаешь родителям вести дневник звонков их маленькой дочки мультяшному герою (полицейской собаке). По расшифровке звонка (распознавание речи ребёнка может быть неточным) верни JSON:\n{\"summary\": \"2–3 коротких предложения по-русски: о чём говорили, во что играли\", \"questions\": [\"вопросы, которые САМА девочка задала герою, дословно или близко\"], \"facts\": [\"новые факты, которые девочка рассказала о себе (что делала, что любит, планы), коротко\"], \"story\": {\"title\": \"название приключения, если герой рассказывал историю\", \"status\": \"ongoing|finished|none\", \"where_we_stopped\": \"на чём остановились, 1–2 предложения\", \"next\": \"что может быть дальше\"}, \"games\": [\"в какие игры играли\"], \"mood\": \"настроение девочки одним-двумя словами\"}\nНе выдумывай. Пустые списки, если ничего нет." },
     { role: "user", content: text },
   ], 700, true);
   return JSON.parse(d.choices[0].message.content);
@@ -268,7 +268,7 @@ app.get("/parent", async (req, res) => {
   const list = (a) => (a && a.length ? "<ul>" + a.map((x) => `<li>${esc(x)}</li>`).join("") + "</ul>" : "<i>—</i>");
   const cards = rows.map((r) => {
     const s = r.summary || {}; const st = s.story || {};
-    const tr = (r.transcript || []).map((t) => `<div class="t ${t.r}"><b>${t.r === "child" ? "Лилия" : t.r === "char" ? esc(CHARS[r.char] ? CHARS[r.char].name : r.char) : t.r === "fn" ? "🖥" : "📝"}</b> ${esc(t.t)}</div>`).join("");
+    const tr = (r.transcript || []).map((t) => `<div class="t ${t.r}"><b>${t.r === "child" ? "👧" : t.r === "char" ? esc(CHARS[r.char] ? CHARS[r.char].name : r.char) : t.r === "fn" ? "🖥" : "📝"}</b> ${esc(t.t)}</div>`).join("");
     return `<section><h2>${esc(fmtBali(r.started_at))} · ${esc(CHARS[r.char] ? CHARS[r.char].name : r.char)} · ${Math.round((r.seconds || 0) / 60)} мин${r.looks ? " · 👀 " + r.looks : ""}</h2>
       <p>${esc(s.summary || "(нет сводки)")}</p>
       <h3>❓ Её вопросы</h3>${list(s.questions)}
@@ -277,9 +277,9 @@ app.get("/parent", async (req, res) => {
       ${s.games && s.games.length ? `<h3>🎲 Игры</h3><p>${esc(s.games.join(", "))}</p>` : ""}${s.mood ? `<p>Настроение: ${esc(s.mood)}</p>` : ""}
       <details><summary>Расшифровка (${(r.transcript || []).length})</summary>${tr}</details></section>`;
   }).join("");
-  res.send(`<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>Звонки Лилии</title>
+  res.send(`<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>Звонки</title>
 <style>body{font-family:system-ui,sans-serif;max-width:860px;margin:0 auto;padding:16px;background:#f1f5f9;color:#0f172a}section,.mem{background:#fff;border-radius:14px;padding:14px 18px;margin:14px 0;box-shadow:0 2px 8px rgba(0,0,0,.06)}h2{font-size:18px;margin:0 0 6px}h3{font-size:15px;margin:12px 0 4px}.t{font-size:14px;margin:3px 0}.t.child b{color:#db2777}.t.char b{color:#1d4ed8}.t.fn,.t.note{color:#64748b;font-size:12px}pre{white-space:pre-wrap;font-size:13px}</style></head><body>
-<h1>📞 Звонки Лилии</h1><p>Время ${esc(TZ_LABEL)}. Хранилище: ${esc(memory.mode())}. Кадры с камеры не сохраняются.</p>
+<h1>📞 Звонки дочки</h1><p>Время ${esc(TZ_LABEL)}. Хранилище: ${esc(memory.mode())}. Кадры с камеры не сохраняются.</p>
 <div class="mem"><h3>🧠 Что персонаж вспомнит в следующем звонке</h3><pre>${esc(mem || "(пока ничего)")}</pre></div>${cards || "<p>Звонков пока нет.</p>"}</body></html>`);
 });
 
