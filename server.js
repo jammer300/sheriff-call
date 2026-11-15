@@ -8,7 +8,7 @@ const path = require("path");
 const crypto = require("crypto");
 const { WebSocketServer, WebSocket } = require("ws");
 const memory = require("./memory");
-const { TOOLS } = require("./tools");
+const { toolsFor, NAMES } = require("./tools");
 
 const KEY = process.env.XAI_API_KEY || process.env.LLM_API_KEY;
 const PORT = process.env.PORT || 8787;
@@ -45,6 +45,11 @@ function momentHint(h) {
   if (h >= 19 && h < 21) return "evening — dinner, getting ready for bed, brushing teeth, a bedtime story";
   return "late night — she should be sleeping: be very soft, short, and kindly suggest it is time to sleep, then say a warm goodnight";
 }
+const GUEST_SHEET = {
+  sheriff: "Шериф (Sheriff Labrador): male, the wise and kind chief, a yellow Labrador; says «Гав!»; masculine grammar (рад, видел).",
+  papillon: "Папийон: female, the youngest officer and inventor with a backpack of gadgets, flies the helicopter, giggles, says «У Папийон всегда есть идея!», «Бип-бип!»; ALWAYS feminine grammar (рада, видела, придумала).",
+  dobie: "Доби: male, a brave, excitable, a bit clumsy Doberman who loves snacks, says «Ух ты-ух ты!»; masculine grammar (рад, видел).",
+};
 const personaTpl = fs.readFileSync(path.join(__dirname, "persona.md"), "utf8");
 const CHARS = JSON.parse(fs.readFileSync(path.join(__dirname, "characters.json"), "utf8"));
 if (process.env.SHERIFF_VOICE) CHARS.sheriff.voice = process.env.SHERIFF_VOICE;
@@ -86,7 +91,7 @@ async function grokText(messages, max_tokens = 600, json = false) {
   return r.json();
 }
 async function summarize(char, transcript) {
-  const text = transcript.map((t) => `${t.r === "child" ? "Девочка" : t.r === "fn" ? "[экран]" : CHARS[char].name}: ${t.t}`).join("\n").slice(-14000);
+  const text = transcript.map((t) => `${t.r === "child" ? "Девочка" : t.r === "fn" ? "[экран]" : t.r === "guest" ? (NAMES[t.who] || "друг") : CHARS[char].name}: ${t.t}`).join("\n").slice(-14000);
   const d = await grokText([
     { role: "system", content: "Ты помогаешь родителям вести дневник звонков их маленькой дочки мультяшному герою (полицейской собаке). По расшифровке звонка (распознавание речи ребёнка может быть неточным) верни JSON:\n{\"summary\": \"2–3 коротких предложения по-русски: о чём говорили, во что играли\", \"questions\": [\"вопросы, которые САМА девочка задала герою, дословно или близко\"], \"facts\": [\"новые факты, которые девочка рассказала о себе (что делала, что любит, планы), коротко\"], \"story\": {\"title\": \"название приключения, если герой рассказывал историю\", \"status\": \"ongoing|finished|none\", \"where_we_stopped\": \"на чём остановились, 1–2 предложения\", \"next\": \"что может быть дальше\"}, \"games\": [\"в какие игры играли\"], \"mood\": \"настроение девочки одним-двумя словами\"}\nНе выдумывай. Пустые списки, если ничего нет." },
     { role: "user", content: text },
@@ -141,12 +146,18 @@ function buildSession(q, memText) {
   else if (name) instructions += `\n\n## Known facts\n- The girl's name is probably "${name}". If what you hear sounds even a little like "${name}", it is her name.`;
   if (memText) instructions += "\n\n## Memory of previous calls (private; from your earlier calls with her)\n" + memText +
     "\n- Use this memory like a real friend: near the start mention ONE thing from last time naturally («В прошлый раз ты мне рассказала…» / «В прошлый раз мы искали…»), and if an adventure is unfinished, offer to continue it. Do not read the memory out as a list.";
+  instructions += "\n\n## Group calls (friends joining)\n" +
+    "- You are the host of this call. Your friends can join with invite_friend (she may ask «позови Доби!», or there is a note that she pressed a button). Then they appear on her screen next to you.\n" +
+    "- A friend speaks ONLY through friend_says (it plays in the friend's own voice). Never say a friend's words in your own voice and never say «Доби говорит…» — just call friend_says.\n" +
+    "- Friends: " + Object.keys(NAMES).filter((k) => k !== c).map((k) => GUEST_SHEET[k]).join(" ") + "\n" +
+    "- When a friend joins, let them greet her by name via friend_says. Then keep a lively, natural banter: a short friend line, a short line from you, and a question to her. If she talks to a friend by name, call friend_says for that friend RIGHT AWAY, without saying anything yourself first (no «Спрашивай у Доби!», no friend catchphrases in your voice); you may add one short line after the friend. Friends' lines are short (1–2 sentences). Do not let friends talk too long to each other; she is the star.\n" +
+    "- Friends can join games and adventures (e.g. Папийон flies the helicopter, Доби finds a snack clue).";
   const keyterms = ["Шериф", "Гав", ...CHILD_KEYTERMS]; if (name) keyterms.push(name);
   const rate = RATES.includes(parseInt(q.get("rate"), 10)) ? parseInt(q.get("rate"), 10) : 24000;
   const voice = /^[a-z0-9_-]{2,40}$/i.test(q.get("voice") || "") ? q.get("voice") : CHARS[c].voice;
   return {
     _char: c,
-    voice, instructions, turn_detection: turn, tools: TOOLS, tool_choice: "auto",
+    voice, instructions, turn_detection: turn, tools: toolsFor(c), tool_choice: "auto",
     audio: {
       input: { format: { type: "audio/pcm", rate }, transcription: { language_hint: "ru", keyterms: [...new Set(keyterms)].slice(0, 100) } },
       output: { format: { type: "audio/pcm", rate: 24000 } },
@@ -203,6 +214,7 @@ function bridge(client, q) {
     if (isBinary) return;
     let e; try { e = JSON.parse(data.toString()); } catch { return; }
     if (e.type === "x.look") return look(e);
+    if (e.type === "x.tts") return tts(e);
     if (!CLIENT_OK.has(e.type)) return;
     if (e.type === "conversation.item.create" && e.item && e.item.type === "message") {
       const t = e.item.content && e.item.content[0] && e.item.content[0].text; if (t) transcript.push({ r: "note", t: String(t).slice(0, 300) });
@@ -232,6 +244,22 @@ function bridge(client, q) {
       ? `(Служебная заметка, не читай вслух: девочка нажала кнопку «Покажи» и показала тебе в камеру вот что: ${result.you_see} Отреагируй радостно и с интересом, похвали, спроси про это ОДИН простой вопрос.)`
       : "(Служебная заметка, не читай вслух: девочка хотела что-то показать в камеру, но картинка не загрузилась. Попроси её рассказать, что это.)" }] } });
     toClient({ type: "x.look.done", call_id: callId });
+  }
+  // a friend in a group call speaks through text-to-speech in their own voice
+  let ttsCount = 0;
+  async function tts(e) {
+    const who = NAMES[e.who] ? e.who : null, text = String(e.text || "").slice(0, 400);
+    if (!who || !text || ++ttsCount > 120) return toClient({ type: "x.tts.audio", id: e.id, who, error: "rejected" });
+    transcript.push({ r: "guest", who, t: text });
+    try {
+      const t0 = Date.now();
+      const r = await fetch("https://api.x.ai/v1/tts", { method: "POST", headers: { Authorization: `Bearer ${KEY}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ text, voice_id: CHARS[who].voice, language: "ru", output_format: { codec: "pcm", sample_rate: 24000 } }) });
+      if (!r.ok) throw new Error("tts " + r.status);
+      const buf = Buffer.from(await r.arrayBuffer());
+      console.log(new Date().toISOString(), "tts", who, text.length + "ch", Date.now() - t0 + "ms");
+      toClient({ type: "x.tts.audio", id: e.id, who, text, audio: buf.toString("base64"), ms: Date.now() - t0 });
+    } catch (err) { console.error("tts error", err.message); toClient({ type: "x.tts.audio", id: e.id, who, error: "failed" }); }
   }
   let ended = false;
   const end = (why) => {
@@ -268,7 +296,7 @@ app.get("/parent", async (req, res) => {
   const list = (a) => (a && a.length ? "<ul>" + a.map((x) => `<li>${esc(x)}</li>`).join("") + "</ul>" : "<i>—</i>");
   const cards = rows.map((r) => {
     const s = r.summary || {}; const st = s.story || {};
-    const tr = (r.transcript || []).map((t) => `<div class="t ${t.r}"><b>${t.r === "child" ? "👧" : t.r === "char" ? esc(CHARS[r.char] ? CHARS[r.char].name : r.char) : t.r === "fn" ? "🖥" : "📝"}</b> ${esc(t.t)}</div>`).join("");
+    const tr = (r.transcript || []).map((t) => `<div class="t ${t.r}"><b>${t.r === "child" ? "👧" : t.r === "char" ? esc(CHARS[r.char] ? CHARS[r.char].name : r.char) : t.r === "fn" ? "🖥" : t.r === "guest" ? esc(NAMES[t.who] || "друг") : "📝"}</b> ${esc(t.t)}</div>`).join("");
     return `<section><h2>${esc(fmtBali(r.started_at))} · ${esc(CHARS[r.char] ? CHARS[r.char].name : r.char)} · ${Math.round((r.seconds || 0) / 60)} мин${r.looks ? " · 👀 " + r.looks : ""}</h2>
       <p>${esc(s.summary || "(нет сводки)")}</p>
       <h3>❓ Её вопросы</h3>${list(s.questions)}

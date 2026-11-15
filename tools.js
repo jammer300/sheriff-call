@@ -23,4 +23,17 @@ const TOOLS = [
   { type: "function", name: "look_at_camera", description: "Look through the video camera to SEE what the girl is showing you. Call it whenever she says «смотри», «вот», «покажу», «посмотри», «look», or asks what you see. Returns a short description of what is in front of the camera.",
     parameters: { type: "object", properties: {} } },
 ];
-module.exports = { TOOLS, COLORS, ROOMS };
+const NAMES = { sheriff: "Шериф", papillon: "Папийон", dobie: "Доби" };
+// group call: friends join the call and speak in their own voice (text-to-speech), the lead directs them
+function toolsFor(lead) {
+  const friends = Object.keys(NAMES).filter((k) => k !== lead);
+  return TOOLS.concat([
+    { type: "function", name: "invite_friend", description: `Call a friend from the police station into this video call (${friends.map((f) => f + " = " + NAMES[f]).join(", ")}). Use when she asks for them («позови Доби»), or to make a story or game more fun. Max 2 friends.`,
+      parameters: { type: "object", properties: { who: { type: "string", enum: friends } }, required: ["who"] } },
+    { type: "function", name: "friend_says", description: "Make a friend who is in the call say something in THEIR OWN voice. Everything a friend says MUST go through this tool; never speak a friend's words in your own voice.",
+      parameters: { type: "object", properties: { who: { type: "string", enum: friends }, text: { type: "string", description: "What the friend says: Russian, 1–2 short sentences, in their own personality and correct grammatical gender." } }, required: ["who", "text"] } },
+    { type: "function", name: "friend_leaves", description: "A friend says bye and leaves the call (when she asks, or the friend has to go on duty).",
+      parameters: { type: "object", properties: { who: { type: "string", enum: friends } }, required: ["who"] } },
+  ]);
+}
+module.exports = { TOOLS, COLORS, ROOMS, NAMES, toolsFor };

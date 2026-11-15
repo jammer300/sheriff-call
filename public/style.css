@@ -139,3 +139,22 @@ html,body{height:100%;overflow:hidden;background:#1e3a8a;font-family:"Nunito","C
 @media (max-aspect-ratio:1/1){#lookBtn span{display:none}#lookBtn{padding:14px 16px;font-size:28px}}
 .state-incall #controls{pointer-events:none}.state-incall #controls button{pointer-events:auto}
 @media (max-aspect-ratio:1/1){#rooms{top:calc(env(safe-area-inset-top) + 62px)}}
+/* ---------- group call ---------- */
+#guests{position:absolute;inset:0;pointer-events:none}
+.guest{position:absolute;bottom:calc(var(--S)*0.36);width:calc(var(--S)*0.78);height:calc(var(--S)*0.78);transform:translateX(-50%);z-index:2;transition:left .6s cubic-bezier(.3,1.3,.5,1),opacity .4s;opacity:0}
+.guest.L{left:-30%}.guest.R{left:130%}
+.guest.L.in{left:20%;opacity:1}.guest.R.in{left:80%;opacity:1}
+.gwalk,.gbody{position:absolute;inset:0}
+.gbody{transform-origin:50% 95%}
+.gbody img{position:absolute;pointer-events:none}
+.gbody .base{inset:0;width:100%;height:100%;filter:drop-shadow(0 10px 18px rgba(0,0,0,.18))}
+.gname{position:absolute;left:50%;top:-4%;transform:translateX(-50%);background:rgba(15,23,42,.55);color:#fff;font-weight:900;font-size:16px;padding:3px 12px;border-radius:999px;white-space:nowrap}
+.group #sheriffWrap{z-index:3}
+@media (max-aspect-ratio:1/1){.guest{width:calc(var(--S)*0.62);height:calc(var(--S)*0.62);bottom:calc(var(--S)*0.5)}.guest.L.in{left:16%}.guest.R.in{left:84%}}
+.board-on .guest.R.in{opacity:0}
+#friends{right:max(12px,env(safe-area-inset-right));bottom:calc(env(safe-area-inset-bottom) + 104px);flex-direction:column}
+#friends button{position:relative;padding:0;border-radius:50%;overflow:visible;background:#fff;border:4px solid #fff}
+#friends img{width:100%;height:100%;border-radius:50%;object-fit:cover}
+#friends i{position:absolute;right:-6px;bottom:-6px;width:26px;height:26px;border-radius:50%;background:#22c55e;color:#fff;font:900 18px/26px system-ui;font-style:normal;text-align:center;border:2px solid #fff}
+#friends button.cur{border-color:#fde047}#friends button.cur i{background:#ef4444}
+@media (min-aspect-ratio:1/1){.board-on #friends{display:none}}

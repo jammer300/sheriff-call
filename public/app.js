@@ -17,6 +17,7 @@ const CHARS = {
 let charId = CHARS[params.get("c")] ? params.get("c") : "sheriff", LAYOUT = null;
 fetch("c/layout.json").then((r) => r.json()).then((j) => { LAYOUT = j; applyChar(charId); }).catch(() => {});
 function applyChar(c) {
+  if (typeof renderFriendsBar === "function") setTimeout(renderFriendsBar, 0);
   charId = c; const ch = CHARS[c];
   $("baseImg").src = `c/${c}/base.png`; $("mouth").src = `c/${c}/mouth.png`; $("blink").src = `c/${c}/blink.png`;
   $("ringImg").src = `c/${c}/avatar.jpg`;
@@ -76,12 +77,12 @@ function blip(f1, f2) {
 }
 
 /* ---------------- audio out ---------------- */
-function playPcm16(b64) {
+function playPcm16(b64, dest) {
   const bin = atob(b64); const n = bin.length >> 1;
   if (!n) return;
   const buf = ctx.createBuffer(1, n, RATE); const ch = buf.getChannelData(0);
   for (let i = 0; i < n; i++) { let v = bin.charCodeAt(2 * i) | (bin.charCodeAt(2 * i + 1) << 8); if (v >= 32768) v -= 65536; ch[i] = v / 32768; }
-  const src = ctx.createBufferSource(); src.buffer = buf; src.connect(outGain);
+  const src = ctx.createBufferSource(); src.buffer = buf; src.connect(dest || outGain);
   const now = ctx.currentTime;
   if (nextPlay < now + 0.05) nextPlay = now + 0.08;
   src.start(nextPlay); nextPlay += buf.duration;
@@ -242,6 +243,7 @@ function attach(sock, isReconnect) {
       case "response.function_call_arguments.done": onFunctionCall(e); break;
       case "x.look.done": lookDone(e); break;
       case "x.look.result": S.looks.push(e); break;
+      case "x.tts.audio": onTtsAudio(e); break;
       case "response.output_item.added": curItem = e.item && e.item.id; curItemStart = Math.max(ctx.currentTime, nextPlay); break;
       case "response.output_audio.delta": app.classList.remove("listening"); playPcm16(e.delta); break;
       case "response.output_audio_transcript.delta": captionText += e.delta || ""; showCaption(captionText); break;
@@ -322,7 +324,7 @@ function cleanup() {
   micStream = camStream = null; $("selfie").srcObject = null;
   if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }
   app.classList.remove("listening");
-  $("caption").innerHTML = ""; hideBoard();
+  $("caption").innerHTML = ""; hideBoard(); clearGuests();
 }
 function hangUp() {
   hangingUp = true; cleanup(); blip(700, 300);
@@ -384,6 +386,7 @@ function onFunctionCall(e) {
   S.fnCalls.push({ name: e.name, args: a, t: Date.now() }); log("tool", e.name, a);
   needContinue = true;
   if (e.name === "look_at_camera") { pendingFn++; doLook(e.call_id); return; }
+  if (e.name === "friend_says") { pendingFn++; friendSays(e.call_id, a.who, a.text); return; }
   let out;
   try { out = runTool(e.name, a); } catch (err) { out = { ok: false, error: String(err) }; }
   fnOutput(e.call_id, out);
@@ -398,6 +401,8 @@ function runTool(name, a) {
     case "show_colors": { const cs = (Array.isArray(a.colors) ? a.colors : []).filter((c) => COLORS[c]).slice(0, 4); boardColors(cs.length >= 2 ? cs : ["красный", "синий", "жёлтый"]); return { ok: true, note: "Colored circles are on her screen. Ask her to tap one; you will get a note which one she tapped." }; }
     case "celebrate": celebrate(); return { ok: true, note: "Confetti is flying on her screen!" };
     case "clear_screen": hideBoard(); return { ok: true };
+    case "invite_friend": { if (!CHARS[a.who] || a.who === charId) return { ok: false, error: "unknown friend" }; if (guests.length >= 2 && !guestOf(a.who)) return { ok: false, error: "max 2 friends" }; addGuest(a.who); return { ok: true, joined: a.who, note: "The friend is on her screen now. Let them greet her via friend_says." }; }
+    case "friend_leaves": removeGuest(a.who); return { ok: true, left: a.who };
     case "go_to_room": { const r = ROOMS[a.room] ? a.room : "office"; setRoom(r); return { ok: true, now_in: r, note: "You walked together into the " + r + ". Say one fun sentence about what is here." }; }
   }
   return { ok: false, error: "unknown tool" };
@@ -407,6 +412,70 @@ function oneEmoji(s, d) {
   if (window.Intl && Intl.Segmenter) { const g = [...new Intl.Segmenter().segment(s)][0]; return g ? g.segment : d; }
   return Array.from(s).slice(0, 2).join("");
 }
+
+/* ---------------- group call: friends ---------------- */
+let guests = [], ttsChain = Promise.resolve(), ttsWait = {}, ttsSeq = 0;
+const guestOf = (c) => guests.find((g) => g.c === c);
+function addGuest(c) {
+  if (guestOf(c) || c === charId || !CHARS[c]) return guestOf(c);
+  const slot = guests.some((g) => g.slot === "L") ? "R" : "L";
+  const wrap = el("div", "guest " + slot); const walk = el("div", "gwalk"); const body = el("div", "gbody");
+  const mk = (k, cls) => { const i = document.createElement("img"); i.src = `c/${c}/${k}.png`; i.className = cls; i.draggable = false; return i; };
+  const base = mk("base", "base"), blink = mk("blink", "ov"), mouth = mk("mouth", "ov");
+  if (LAYOUT && LAYOUT[c]) [["mouth", mouth], ["blink", blink]].forEach(([k, e]) => { const [x, y, w, h] = LAYOUT[c][k]; Object.assign(e.style, { left: x + "%", top: y + "%", width: w + "%", height: h + "%" }); });
+  mouth.style.opacity = 0; blink.style.opacity = 0;
+  body.append(base, blink, mouth); walk.appendChild(body); wrap.appendChild(walk);
+  const tag = el("div", "gname", CHARS[c].name); wrap.appendChild(tag);
+  $("guests").appendChild(wrap);
+  const gain = ctx.createGain(), an = ctx.createAnalyser(); an.fftSize = 1024; gain.connect(an); gain.connect(ctx.destination);
+  const g = { c, slot, wrap, body, mouth, blink, gain, an, level: 0, open: false, nextBlink: performance.now() + 1500 + Math.random() * 2000, blinkUntil: 0 };
+  guests.push(g); app.classList.add("group"); sfx("fanfare");
+  requestAnimationFrame(() => wrap.classList.add("in"));
+  S.guests = guests.map((x) => x.c); renderFriendsBar();
+  return g;
+}
+function removeGuest(c) {
+  const g = guestOf(c); if (!g) return;
+  guests = guests.filter((x) => x !== g); g.wrap.classList.remove("in"); sfx("whoosh");
+  setTimeout(() => { g.wrap.remove(); try { g.gain.disconnect(); } catch (e) {} }, 600);
+  if (!guests.length) app.classList.remove("group");
+  S.guests = guests.map((x) => x.c); renderFriendsBar();
+}
+function clearGuests() { guests.slice().forEach((g) => removeGuest(g.c)); guests = []; app.classList.remove("group"); }
+function friendSays(callId, who, text) {
+  const g = addGuest(who);
+  if (!g || !text) { pendingFn = Math.max(0, pendingFn - 1); fnOutput(callId, { ok: false, error: "friend is not in the call" }); kick(); return; }
+  const id = ++ttsSeq;
+  // keep friends' lines in order even if TTS answers arrive out of order
+  ttsChain = ttsChain.then(() => new Promise((res) => {
+    ttsWait[id] = (e) => {
+      if (e.audio && guestOf(who)) { playPcm16(e.audio, guestOf(who).gain); showCaption(CHARS[who].name + ": " + (e.text || text)); S.friendLines = (S.friendLines || []).concat({ who, text, ms: e.ms }); }
+      fnOutput(callId, e.audio ? { ok: true, said: text, note: "Your friend said it in their own voice. Do not repeat it." } : { ok: false, error: "voice failed" });
+      pendingFn = Math.max(0, pendingFn - 1); kick(); res();
+    };
+    if (!ws) return ttsWait[id]({});
+    ws.send(JSON.stringify({ type: "x.tts", id, who, text }));
+    setTimeout(() => ttsWait[id] && ttsWait[id]({}), 12000);
+  }).then(() => { delete ttsWait[id]; }));
+}
+function onTtsAudio(e) { const f = ttsWait[e.id]; if (f) { ttsWait[e.id] = null; f(e); } }
+function renderFriendsBar() {
+  const bar = $("friends"); if (!bar) return; bar.innerHTML = "";
+  Object.keys(CHARS).filter((c) => c !== charId).forEach((c) => {
+    const b = document.createElement("button"); b.dataset.c = c; b.title = (guestOf(c) ? "Попрощаться: " : "Позвать: ") + CHARS[c].name;
+    const im = document.createElement("img"); im.src = `c/${c}/avatar.jpg`; b.appendChild(im); b.appendChild(el("i", null, guestOf(c) ? "✕" : "+"));
+    b.classList.toggle("cur", !!guestOf(c));
+    b.addEventListener("click", () => {
+      if (!ws || !S.sessionUpdated) return;
+      if (guestOf(c)) { note(`девочка нажала кнопку — ${CHARS[c].name} прощается и уходит. Пусть ${CHARS[c].name} коротко попрощается через friend_says, потом вызови friend_leaves.`, { interrupt: true }); return; }
+      if (guests.length >= 2) return;
+      addGuest(c);
+      note(`девочка нажала кнопку «Позвать» — ${CHARS[c].name} присоединился к звонку и уже на экране (invite_friend вызывать не нужно). Пусть ${CHARS[c].name} радостно поздоровается с ней через friend_says, а потом ты что-нибудь весело скажи.`, { interrupt: true });
+    });
+    bar.appendChild(b);
+  });
+}
+renderFriendsBar();
 
 /* ---------------- camera look ---------------- */
 let lookBusy = false;
@@ -596,6 +665,16 @@ function frame(now) {
   const tilt = listening ? -6 : Math.sin(t * 0.7) * 1.5 + Math.sin(t * 7.3) * talk * 4;
   const bounce = -Math.abs(Math.sin(t * 9)) * talk * 14;
   sheriff.style.transform = `translateY(${bounce.toFixed(1)}px) rotate(${tilt.toFixed(2)}deg) scale(${(1 + breathe + talk * 0.05).toFixed(4)}, ${(1 - breathe * 0.4 + talk * 0.06).toFixed(4)})`;
+  guests.forEach((g) => {
+    g.an.getFloatTimeDomainData(tbuf); let q = 0; for (let i = 0; i < tbuf.length; i++) q += tbuf[i] * tbuf[i]; const r = Math.sqrt(q / tbuf.length);
+    g.level += (r > g.level ? 0.6 : 0.25) * (r - g.level);
+    if (!g.open && g.level > 0.035) g.open = true; else if (g.open && g.level < 0.02) g.open = false;
+    g.mouth.style.opacity = g.open && (flap || g.level > 0.12) ? Math.min(1, 0.6 + g.level * 6).toFixed(2) : "0";
+    const gt = Math.min(g.level * 4, 0.6);
+    g.body.style.transform = `translateY(${(-Math.abs(Math.sin(t * 9 + 1)) * gt * 14).toFixed(1)}px) rotate(${(Math.sin(t * 0.8 + 2) * 1.5 + Math.sin(t * 7.1) * gt * 4).toFixed(2)}deg) scale(${(1 + Math.sin(t * 1.5 + 1) * 0.012).toFixed(4)})`;
+    if (now > g.nextBlink) { g.blinkUntil = now + 140; g.nextBlink = now + 2400 + Math.random() * 3800; }
+    g.blink.style.opacity = now < g.blinkUntil ? "1" : "0";
+  });
   if (now > nextBlink) { blinkUntil = now + 140; nextBlink = now + 2200 + Math.random() * 3800; if (Math.random() < 0.2) nextBlink = now + 320; }
   blinkEl.style.opacity = now < blinkUntil ? "1" : "0";
   requestAnimationFrame(frame);
