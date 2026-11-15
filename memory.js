@@ -53,4 +53,10 @@ async function recent(n = 50) {
   if (mode === "file") return readFile().sort((a, b) => new Date(b.started_at) - new Date(a.started_at)).slice(0, n);
   return [];
 }
-module.exports = { init, saveCall, recent, mode: () => mode };
+async function del(id) {
+  id = parseInt(id, 10); if (!id) return 0;
+  if (mode === "postgres") return (await pool.query(`delete from ${pool._pre}calls where id=$1`, [id])).rowCount;
+  if (mode === "file") { const all = readFile(); const rest = all.filter((r) => r.id !== id); fs.writeFileSync(FILE, JSON.stringify(rest)); return all.length - rest.length; }
+  return 0;
+}
+module.exports = { init, saveCall, recent, del, mode: () => mode };

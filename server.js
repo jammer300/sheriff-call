@@ -275,12 +275,20 @@ app.get("/parent", async (req, res) => {
       <h3>💡 Что рассказала</h3>${list(s.facts)}
       ${st.status && st.status !== "none" ? `<h3>📖 Приключение: ${esc(st.title)} (${st.status === "ongoing" ? "продолжение следует" : "закончено"})</h3><p>${esc(st.where_we_stopped)} ${st.next ? "<br><i>Дальше: " + esc(st.next) + "</i>" : ""}</p>` : ""}
       ${s.games && s.games.length ? `<h3>🎲 Игры</h3><p>${esc(s.games.join(", "))}</p>` : ""}${s.mood ? `<p>Настроение: ${esc(s.mood)}</p>` : ""}
+      <form method="post" action="/parent/delete?key=${encodeURIComponent(req.query.key)}" onsubmit="return confirm('Удалить этот звонок из памяти?')"><input type="hidden" name="id" value="${esc(r.id)}"><button>🗑 Удалить из памяти</button></form>
       <details><summary>Расшифровка (${(r.transcript || []).length})</summary>${tr}</details></section>`;
   }).join("");
   res.send(`<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>Звонки</title>
 <style>body{font-family:system-ui,sans-serif;max-width:860px;margin:0 auto;padding:16px;background:#f1f5f9;color:#0f172a}section,.mem{background:#fff;border-radius:14px;padding:14px 18px;margin:14px 0;box-shadow:0 2px 8px rgba(0,0,0,.06)}h2{font-size:18px;margin:0 0 6px}h3{font-size:15px;margin:12px 0 4px}.t{font-size:14px;margin:3px 0}.t.child b{color:#db2777}.t.char b{color:#1d4ed8}.t.fn,.t.note{color:#64748b;font-size:12px}pre{white-space:pre-wrap;font-size:13px}</style></head><body>
 <h1>📞 Звонки дочки</h1><p>Время ${esc(TZ_LABEL)}. Хранилище: ${esc(memory.mode())}. Кадры с камеры не сохраняются.</p>
 <div class="mem"><h3>🧠 Что персонаж вспомнит в следующем звонке</h3><pre>${esc(mem || "(пока ничего)")}</pre></div>${cards || "<p>Звонков пока нет.</p>"}</body></html>`);
+});
+
+app.post("/parent/delete", express.urlencoded({ extended: false }), async (req, res) => {
+  res.set({ "Cache-Control": "no-store", "Referrer-Policy": "no-referrer" });
+  if (!keyOk(req.query.key)) return res.status(404).send("Not found");
+  try { await memory.del(req.body.id); } catch (e) { return res.status(500).send("error"); }
+  res.redirect(303, "/parent?key=" + encodeURIComponent(req.query.key));
 });
 
 memory.init().then((m) => console.log("memory:", m), (e) => console.error("memory init failed:", e.message))
