@@ -158,3 +158,8 @@ html,body{height:100%;overflow:hidden;background:#1e3a8a;font-family:"Nunito","C
 #friends i{position:absolute;right:-6px;bottom:-6px;width:26px;height:26px;border-radius:50%;background:#22c55e;color:#fff;font:900 18px/26px system-ui;font-style:normal;text-align:center;border:2px solid #fff}
 #friends button.cur{border-color:#fde047}#friends button.cur i{background:#ef4444}
 @media (min-aspect-ratio:1/1){.board-on #friends{display:none}}
+.count3{position:absolute;inset:0;display:grid;place-items:center;font:900 64px/1 system-ui;color:#fff;text-shadow:0 4px 12px rgba(0,0,0,.6);z-index:3;background:rgba(0,0,0,.15)}
+.count3.go{animation:cnt .5s ease-out}
+@keyframes cnt{from{transform:scale(1.8);opacity:0}to{transform:scale(1);opacity:1}}
+.looking #pip{transform:scale(1.35);transform-origin:top right;transition:transform .3s;border-color:#f472b6}
+#pip{transition:transform .3s}

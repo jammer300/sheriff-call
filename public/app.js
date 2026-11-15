@@ -246,7 +246,7 @@ function attach(sock, isReconnect) {
       case "x.tts.audio": onTtsAudio(e); break;
       case "response.output_item.added": curItem = e.item && e.item.id; curItemStart = Math.max(ctx.currentTime, nextPlay); break;
       case "response.output_audio.delta": app.classList.remove("listening"); playPcm16(e.delta); break;
-      case "response.output_audio_transcript.delta": captionText += e.delta || ""; showCaption(captionText); break;
+      case "response.output_audio_transcript.delta": captionText += e.delta || ""; showCaption(captionText); checkRunaway(captionText); break;
       case "response.output_audio_transcript.done": S.transcripts.push(e.transcript); log("sheriff:", e.transcript); break;
       case "error": S.errors.push(e); break;
     }
@@ -260,6 +260,20 @@ function attach(sock, isReconnect) {
       connectWithRetry(true).catch((e) => { fail("Связь потерялась 😢 Попробуй позвонить ещё раз."); });
     }
   };
+}
+// If the voice model gets stuck repeating a word ("shy shy shy shy…"), cut it off and ask for one short sentence.
+let runawayCut = 0;
+function checkRunaway(t) {
+  const w = t.toLowerCase().replace(/[^\p{L}\p{N}\s-]/gu, " ").split(/\s+/).filter(Boolean);
+  let run = 1, max = 1;
+  for (let i = 1; i < w.length; i++) { run = w[i] === w[i - 1] ? run + 1 : 1; if (run > max) max = run; }
+  const tail = w.slice(-12), uniq = new Set(tail).size;
+  if (max >= 5 || (tail.length >= 12 && uniq <= 3) || t.length > 900) {
+    if (Date.now() - runawayCut < 3000) return;
+    runawayCut = Date.now(); S.runawayCuts = (S.runawayCuts || 0) + 1; log("runaway speech cut", t.slice(-80));
+    captionText = ""; interrupt();
+    noteQueue.push("(Служебная заметка, не читай вслух: твой последний ответ сломался и повторял одно слово — его обрезали. Скажи заново ОДНО короткое нормальное предложение, без повторов.)");
+  }
 }
 let capTimer;
 function showCaption(t) {
@@ -289,7 +303,7 @@ async function startCall(c) {
   try {
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error("nomedia");
     await startMic();
-    navigator.mediaDevices.getUserMedia({ video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } }, audio: false })
+    navigator.mediaDevices.getUserMedia({ video: { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false })
       .then((s) => { camStream = s; $("selfie").srcObject = s; }).catch((e) => log("no camera", String(e)));
     await ringMin;
     if (hangingUp) return;
@@ -385,7 +399,10 @@ function onFunctionCall(e) {
   let a = {}; try { a = JSON.parse(e.arguments || "{}"); } catch (err) {}
   S.fnCalls.push({ name: e.name, args: a, t: Date.now() }); log("tool", e.name, a);
   needContinue = true;
-  if (e.name === "look_at_camera") { pendingFn++; doLook(e.call_id); return; }
+  if (e.name === "look_at_camera") {
+    if (lookBusy) { fnOutput(e.call_id, { ok: false, error: "Already looking — wait for the picture. Do not call look_at_camera again now." }); return; }
+    pendingFn++; doLook(e.call_id); return;
+  }
   if (e.name === "friend_says") { pendingFn++; friendSays(e.call_id, a.who, a.text); return; }
   let out;
   try { out = runTool(e.name, a); } catch (err) { out = { ok: false, error: String(err) }; }
@@ -478,29 +495,66 @@ function renderFriendsBar() {
 renderFriendsBar();
 
 /* ---------------- camera look ---------------- */
-let lookBusy = false;
-function grabFrame() {
+let lookBusy = false, lookTimer = null, lookCallId = null;
+const LOOK_PX = parseInt(params.get("lookpx") || "1024", 10);
+// sharpness = variance of a simple Laplacian on a small grayscale copy
+function sharpness(c) {
+  const w = 160, h = Math.round(c.height * 160 / c.width), t = document.createElement("canvas"); t.width = w; t.height = h;
+  const x = t.getContext("2d"); x.drawImage(c, 0, 0, w, h); const d = x.getImageData(0, 0, w, h).data;
+  const g = new Float32Array(w * h); for (let i = 0; i < w * h; i++) g[i] = d[4 * i] * 0.3 + d[4 * i + 1] * 0.59 + d[4 * i + 2] * 0.11;
+  let sum = 0, sq = 0, n = 0, bright = 0;
+  for (let y = 1; y < h - 1; y++) for (let i = 1; i < w - 1; i++) { const k = y * w + i; const L = 4 * g[k] - g[k - 1] - g[k + 1] - g[k - w] - g[k + w]; sum += L; sq += L * L; n++; bright += g[k]; }
+  return { sharp: sq / n - (sum / n) ** 2, bright: bright / n };
+}
+function grabCanvas() {
   const v = $("selfie");
   if (!camStream || !v.videoWidth) return null;
-  const sc = Math.min(1, 512 / Math.max(v.videoWidth, v.videoHeight));
+  const sc = Math.min(1, LOOK_PX / Math.max(v.videoWidth, v.videoHeight));
   const c = document.createElement("canvas"); c.width = Math.round(v.videoWidth * sc); c.height = Math.round(v.videoHeight * sc);
-  c.getContext("2d").drawImage(v, 0, 0, c.width, c.height);
-  return c.toDataURL("image/jpeg", 0.72).split(",")[1];
+  c.getContext("2d").drawImage(v, 0, 0, c.width, c.height);   // true (non-mirrored) orientation
+  return c;
 }
-function doLook(callId) {
-  lookBusy = true; $("lookBtn").classList.add("busy");
-  const img = grabFrame();
-  if (img) { const f = document.createElement("div"); f.className = "flash"; $("pip").appendChild(f); setTimeout(() => f.remove(), 400); sfx("shutter"); }
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+async function countdown() {
+  const pip = $("pip"); const o = el("div", "count3"); pip.appendChild(o);
+  for (const n of ["3", "2", "1"]) { o.textContent = n; o.classList.remove("go"); void o.offsetWidth; o.classList.add("go"); sfx("pop", 3 - +n); await sleep(550); }
+  o.textContent = "📸"; setTimeout(() => o.remove(), 500);
+}
+async function doLook(callId) {
+  lookBusy = true; lookCallId = callId; $("lookBtn").classList.add("busy");
+  // safety net: never leave the voice model waiting for this function result
+  clearTimeout(lookTimer);
+  lookTimer = setTimeout(() => {
+    if (!lookBusy) return; log("look timeout");
+    if (callId) fnOutput(callId, { ok: false, error: "Could not see the picture. Say «Не разглядел(а), покажи ещё раз поближе!»" });
+    lookDone({ call_id: callId, timeout: true });
+  }, 16000);
+  let img = null;
+  if (camStream && $("selfie").videoWidth) {
+    app.classList.add("looking"); await countdown();
+    // take 3 frames ~150 ms apart and keep the sharpest one (hands move!)
+    let best = null;
+    for (let i = 0; i < 3; i++) { const c = grabCanvas(); if (c) { const q = sharpness(c); if (!best || q.sharp > best.q.sharp) best = { c, q }; } if (i < 2) await sleep(150); }
+    app.classList.remove("looking");
+    if (best) {
+      img = best.c.toDataURL("image/jpeg", 0.86).split(",")[1];
+      S.lastLookFrame = { w: best.c.width, h: best.c.height, kb: Math.round(img.length * 0.75 / 1024), sharp: Math.round(best.q.sharp), bright: Math.round(best.q.bright) };
+      log("look frame", S.lastLookFrame);
+      const f = document.createElement("div"); f.className = "flash"; $("pip").appendChild(f); setTimeout(() => f.remove(), 400); sfx("shutter");
+    }
+  }
+  if (!lookBusy) return;               // timed out meanwhile
   S.lookSentAt = performance.now();
-  ws && ws.send(JSON.stringify({ type: "x.look", call_id: callId, image: img || undefined, reason: img ? undefined : "camera is off — ask her to tell you what it is" }));
+  if (ws) ws.send(JSON.stringify({ type: "x.look", call_id: callId, image: img || undefined }));
+  else lookDone({ call_id: callId });
 }
 function lookDone(e) {
-  lookBusy = false; $("lookBtn").classList.remove("busy");
+  if (!lookBusy && !e.timeout) return;
+  clearTimeout(lookTimer); lookBusy = false; $("lookBtn").classList.remove("busy");
   S.lookRoundTripMs = Math.round(performance.now() - (S.lookSentAt || 0));
   if (e.call_id) pendingFn = Math.max(0, pendingFn - 1);
   needContinue = true; kick();
 }
-if (DEBUG) S.say = (t) => { if (respActive || isSpeaking()) interrupt(); noteQueue.push(t); kick(); };
 $("lookBtn").addEventListener("click", () => {
   if (!ws || !S.sessionUpdated || lookBusy) return;
   if (respActive || isSpeaking()) interrupt();

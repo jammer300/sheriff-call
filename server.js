@@ -98,14 +98,37 @@ async function summarize(char, transcript) {
   ], 700, true);
   return JSON.parse(d.choices[0].message.content);
 }
-async function describeImage(b64) {
+const VISION_PROMPT = "Ты — глаза мультяшного героя на видеозвонке с ребёнком (иногда в кадре взрослый). Человек что-то показывает в камеру. Внимательно рассмотри кадр и по-русски, коротко и ТОЧНО опиши, что показывают:\n- Руки и жесты: если в кадре рука — сколько пальцев поднято (посчитай каждый палец внимательно, большой палец тоже), какой жест (пять пальцев/ладошка, «викторина/V», большой палец вверх, кулак, машет рукой, сердечко).\n- Предметы в руках или у камеры: что это (игрушка, рисунок, еда, книжка…), цвет, пара деталей; сколько их, если несколько.\n- Крупные буквы или цифры на рисунке/игрушке/карточке — какие (но не читай адреса, документы, экраны).\nЛицо и внешность людей НЕ описывай, но руки, жесты и предметы описывай всегда. Если что-то не видно чётко (размыто, темно, обрезано) — так и скажи и честно укажи, в чём не уверен, не выдумывай. Если ничего не показывают, скажи «ничего не показывают, видно только человека». 1–2 предложения, обычный текст без markdown.";
+const VISION_MODEL = process.env.VISION_MODEL || "grok-4.7";            // strongest vision, ~3–5 s
+const VISION_FAST = process.env.VISION_FAST_MODEL || "grok-4.20-0309-non-reasoning"; // ~1 s backup
+async function visionCall(model, b64, extra, signal) {
   const t0 = Date.now();
-  const d = await grokText([
-    { role: "system", content: "Ты — глаза мультяшного героя на видеозвонке с девочкой 4 лет. Она показывает что-то в камеру. Опиши по-русски 1–2 короткими простыми фразами ГЛАВНЫЙ предмет, который она показывает (игрушка, рисунок, еда, животное…), его цвет и пару деталей. Если это рисунок — что на нём нарисовано. Если ничего не видно (темно, размыто, только лицо) — так и скажи. Обычный текст без markdown. Не описывай внешность людей и не читай надписи, адреса или документы." },
-    { role: "user", content: [{ type: "image_url", image_url: { url: "data:image/jpeg;base64," + b64, detail: "low" } }, { type: "text", text: "Что она показывает?" }] },
-  ], 120);
-  const cost = d.usage && d.usage.cost_in_usd_ticks ? d.usage.cost_in_usd_ticks / 1e10 : null;
-  return { text: d.choices[0].message.content.replace(/[*_#`]+/g, "").replace(/\s+/g, " ").trim(), ms: Date.now() - t0, cost };
+  const body = { model, max_tokens: 400, temperature: 0.1, ...extra, messages: [
+    { role: "system", content: VISION_PROMPT },
+    { role: "user", content: [{ type: "image_url", image_url: { url: "data:image/jpeg;base64," + b64, detail: "high" } }, { type: "text", text: "Что показывают в камеру?" }] }] };
+  const r = await fetch("https://api.x.ai/v1/chat/completions", { method: "POST", signal, headers: { Authorization: `Bearer ${KEY}`, "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  if (!r.ok) throw new Error(model + " " + r.status + " " + (await r.text()).slice(0, 160));
+  const d = await r.json();
+  const text = (d.choices[0].message.content || "").replace(/[*_#`]+/g, "").replace(/\s+/g, " ").trim();
+  if (!text) throw new Error(model + " empty");
+  return { model, text, ms: Date.now() - t0, cost: d.usage && d.usage.cost_in_usd_ticks ? d.usage.cost_in_usd_ticks / 1e10 : 0 };
+}
+// Ask the strong model and a fast model in parallel: prefer the strong answer if it comes within
+// PREFER_MS, otherwise take the fast one; give up after HARD_MS (the caller always answers the model).
+async function describeImage(b64) {
+  const PREFER_MS = 6000, HARD_MS = 9000, t0 = Date.now();
+  const ac = new AbortController(); const kill = setTimeout(() => ac.abort(), HARD_MS);
+  const strong = visionCall(VISION_MODEL, b64, /grok-4\.(5|6|7)/.test(VISION_MODEL) ? { reasoning_effort: "low" } : {}, ac.signal);
+  const fast = visionCall(VISION_FAST, b64, {}, ac.signal);
+  strong.catch(() => {}); fast.catch(() => {});
+  const timeout = (ms) => new Promise((res) => setTimeout(() => res(null), ms));
+  try {
+    let r = await Promise.race([strong, timeout(PREFER_MS)]).catch(() => null);
+    if (!r) r = await Promise.any([fast, strong]).catch(() => null);
+    if (!r) throw new Error("no vision answer");
+    const costP = Promise.allSettled([strong, fast]).then((all) => { clearTimeout(kill); return all.reduce((s, x) => s + (x.status === "fulfilled" ? x.value.cost : 0), 0); });
+    return { text: r.text, ms: Date.now() - t0, model: r.model, costP };
+  } catch (e) { clearTimeout(kill); throw e; }
 }
 
 const app = express();
@@ -174,7 +197,7 @@ function scrub(e) {
   return e;
 }
 
-const wss = new WebSocketServer({ noServer: true, maxPayload: 2 * 1024 * 1024 });
+const wss = new WebSocketServer({ noServer: true, maxPayload: 3 * 1024 * 1024 });
 server.on("upgrade", (req, sock, head) => {
   const u = new URL(req.url, "http://x");
   if (u.pathname !== "/rt") return sock.destroy();
@@ -224,27 +247,43 @@ function bridge(client, q) {
   });
   // The browser sends ONE downscaled webcam frame; we describe it with a vision model and hand the
   // text to the voice model. The frame is kept only in memory for this request and never stored.
+  let lookBusy = false, lastLook = null, lookFails = 0;
+  const HONEST = "Say ONLY what is in this description; if it says something is unclear, honestly say you could not see it well and ask her to show it again closer and slower. Never guess numbers you were not told.";
   async function look(e) {
     const callId = typeof e.call_id === "string" ? e.call_id.slice(0, 100) : null;
     let result;
-    if (looks >= 40) result = { ok: false, error: "too many looks in this call" };
-    else if (!e.image || typeof e.image !== "string" || e.image.length > 1.5e6) result = { ok: false, error: e.reason || "camera is off — ask her to tell you what it is" };
-    else {
-      looks++;
-      try {
-        const r = await describeImage(e.image.replace(/^data:image\/\w+;base64,/, ""));
-        result = { ok: true, you_see: r.text };
-        console.log(new Date().toISOString(), "look", r.ms + "ms", r.cost != null ? "$" + r.cost.toFixed(5) : "", JSON.stringify(r.text).slice(0, 160));
-        transcript.push({ r: "fn", t: "look: " + r.text });
-        toClient({ type: "x.look.result", ms: r.ms, cost: r.cost, text: DEBUG_LOOK ? r.text : undefined });
-      } catch (err) { console.error("look error", err.message); result = { ok: false, error: "the camera picture did not load — ask her to tell you what it is" }; }
-    }
+    try {
+      if (lookBusy) result = { ok: false, error: "You are already looking — wait for that answer. Do not call look_at_camera again now." };
+      else if (lastLook && Date.now() - lastLook.at < 3000) result = { ...lastLook.result, note: "Same picture as a moment ago. Do not call look_at_camera again until she shows something new." };
+      else if (looks >= 40) result = { ok: false, error: "Camera is resting now. Ask her to tell you about it with words." };
+      else if (!e.image || typeof e.image !== "string" || e.image.length > 2e6) result = { ok: false, error: "Camera is off. Ask her to tell you what it is." };
+      else {
+        looks++; lookBusy = true;
+        try {
+          const r = await describeImage(e.image.replace(/^data:image\/\w+;base64,/, ""));
+          lookFails = 0;
+          result = { ok: true, you_see: r.text, note: HONEST };
+          r.costP.then((c) => console.log(new Date().toISOString(), "look", r.model, r.ms + "ms", "$" + c.toFixed(4), Math.round(e.image.length * 0.75 / 1024) + "KB", JSON.stringify(r.text).slice(0, 200)));
+          transcript.push({ r: "fn", t: "look: " + r.text });
+          toClient({ type: "x.look.result", ms: r.ms, model: r.model, text: DEBUG_LOOK ? r.text : undefined });
+        } catch (err) {
+          lookFails++;
+          console.error("look error", err.message);
+          result = { ok: false, error: lookFails >= 2
+            ? "The camera picture did not work again. Do NOT call look_at_camera again; kindly ask her to tell you with words what she is showing."
+            : "Could not see the picture this time. Say «Не разглядел(а), покажи ещё раз поближе!» and wait." };
+        }
+      }
+    } catch (err) { result = { ok: false, error: "camera error — ask her to tell you with words" }; }
+    finally { lookBusy = false; }
+    lastLook = { at: Date.now(), result };
     if (callId) toUp({ type: "conversation.item.create", item: { type: "function_call_output", call_id: callId, output: JSON.stringify(result) } });
     else toUp({ type: "conversation.item.create", item: { type: "message", role: "user", content: [{ type: "input_text", text: result.ok
-      ? `(Служебная заметка, не читай вслух: девочка нажала кнопку «Покажи» и показала тебе в камеру вот что: ${result.you_see} Отреагируй радостно и с интересом, похвали, спроси про это ОДИН простой вопрос.)`
-      : "(Служебная заметка, не читай вслух: девочка хотела что-то показать в камеру, но картинка не загрузилась. Попроси её рассказать, что это.)" }] } });
-    toClient({ type: "x.look.done", call_id: callId });
+      ? `(Служебная заметка, не читай вслух: девочка нажала кнопку «Покажи» и показала тебе в камеру вот что: ${result.you_see} Отреагируй радостно и с интересом, похвали, спроси про это ОДИН простой вопрос. Говори только о том, что в описании; если там написано, что что-то неясно — честно скажи, что не разглядел, и попроси показать ещё раз поближе.)`
+      : "(Служебная заметка, не читай вслух: девочка хотела что-то показать в камеру, но картинку не удалось разглядеть. Честно скажи, что не разглядел, и попроси показать ещё раз поближе или рассказать словами.)" }] } });
+    toClient({ type: "x.look.done", call_id: callId, ok: !!result.ok });
   }
+
   // a friend in a group call speaks through text-to-speech in their own voice
   let ttsCount = 0;
   async function tts(e) {
