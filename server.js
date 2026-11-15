@@ -33,6 +33,14 @@ function timeContext(now = new Date()) {
     text: `Сейчас ${WEEKDAYS[wd]}, ${parts.day} ${MONTHS[parseInt(parts.month, 10) - 1]}, ${h}:${String(m).padStart(2, "0")} ${partGen} ${TZ_LABEL} (${part}; ${weekend ? "выходной день" : "будний день"}).`,
   };
 }
+function momentHint(h) {
+  if (h >= 5 && h < 10) return "early morning — how she slept, breakfast, plans for the day";
+  if (h >= 10 && h < 12) return "late morning — what she is doing or playing right now, plans for today; lunch is coming soon (do NOT ask how she slept, it is too late for that)";
+  if (h >= 12 && h < 15) return "midday — lunch, what she did this morning";
+  if (h >= 15 && h < 19) return "afternoon — how her day went, snack, play, dinner soon";
+  if (h >= 19 && h < 21) return "evening — dinner, getting ready for bed, brushing teeth, a bedtime story";
+  return "late night — she should be sleeping: be very soft, short, and kindly suggest it is time to sleep, then say a warm goodnight";
+}
 const persona = fs.readFileSync(path.join(__dirname, "persona.md"), "utf8");
 
 const app = express();
@@ -64,7 +72,7 @@ function buildSession(q) {
   let instructions = persona;
   const t = timeContext();
   instructions += "\n\n## Current time\n- " + t.text +
-    "\n- Let the moment shape your questions: morning — how she slept, breakfast; midday — lunch; evening — dinner, plans, getting ready for bed; late night — kindly suggest it is time to sleep." +
+    "\n- Right now it fits to talk about: " + momentHint(t.h) + "." +
     "\n- Use the time naturally, ONE question at a time, never like an interview. Do not say the exact clock time unless she asks or it really matters. The call lasts at most 20 minutes, so this time stays valid for the whole call.";
   if (CHILD_ROUTINE) instructions += "\n\n## Her daily routine (private; use it with the current time above)\n" + CHILD_ROUTINE;
   if (CHILD_CONTEXT) instructions += "\n\n## Known facts about the girl (private; you already know her)\n" + CHILD_CONTEXT;
