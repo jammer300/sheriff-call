@@ -156,20 +156,20 @@ function flushMic() {
 
 /* ---------------- realtime session ---------------- */
 async function connect(isReconnect) {
-  const r = await fetch("api/session", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ voice: params.get("voice") || "", vad: params.get("vad"), silence: params.get("silence"), prefix: params.get("prefix"), name: params.get("name") }) });
-  if (!r.ok) throw new Error("Сервер не дал ключ (" + r.status + ")");
-  const cfg = await r.json();
+  // The server proxies the realtime session; persona/private context stay server-side.
+  const q = new URLSearchParams();
+  ["voice", "vad", "silence", "prefix", "name"].forEach((k) => { if (params.get(k)) q.set(k, params.get(k)); });
+  q.set("rate", String(inRate));
+  const url = (location.protocol === "https:" ? "wss://" : "ws://") + location.host + location.pathname.replace(/[^/]*$/, "") + "rt?" + q;
   return new Promise((resolve, reject) => {
-    const sock = new WebSocket("wss://api.x.ai/v1/realtime?model=" + encodeURIComponent(cfg.model || "grok-voice-latest"), ["xai-client-secret." + cfg.token]);
+    const sock = new WebSocket(url);
     let done = false;
-    const to = setTimeout(() => { if (!done) { done = true; try { sock.close(); } catch (e) {} reject(new Error("timeout")); } }, 6000);
+    const to = setTimeout(() => { if (!done) { done = true; try { sock.close(); } catch (e) {} reject(new Error("timeout")); } }, 8000);
     sock.onmessage = (m) => {
       if (typeof m.data !== "string") return;
       const e = JSON.parse(m.data);
       if (e.type === "session.created" && !done) {
         done = true; clearTimeout(to); S.sessionCreated = true;
-        cfg.session.audio.input.format.rate = inRate; S.turn = cfg.session.turn_detection; log("turn_detection", cfg.session.turn_detection);
-        sock.send(JSON.stringify({ type: "session.update", session: cfg.session }));
         ws = sock; firstUpdate = true; attach(sock, isReconnect); resolve();
       }
     };
@@ -196,12 +196,13 @@ function attach(sock, isReconnect) {
     if (e.type !== "response.output_audio.delta" && e.type !== "response.output_audio_transcript.delta") { S.events.push(e.type); log("←", e.type, e.type === "error" ? e : ""); }
     switch (e.type) {
       case "session.updated":
+        if (firstUpdate) S.turn = e.session && e.session.turn_detection;
         if (firstUpdate) {
           firstUpdate = false; S.sessionUpdated = true;
           if (S.state === "ringing") enterCall();
           sayAsUser(isReconnect
             ? "(Служебная заметка, не читай вслух: связь на секунду прервалась и восстановилась. Весело скажи, что связь вернулась, и продолжай болтать с девочкой.)"
-            : "(Служебная заметка, не читай вслух: маленькая девочка только что позвонила тебе по видеосвязи. Радостно поздоровайся первым, коротко представься как Шериф и спроси, как её зовут.)");
+            : "(Служебная заметка, не читай вслух: девочка только что позвонила тебе по видеосвязи. Радостно поздоровайся первым. Если ты уже знаешь её имя — назови её по имени и не спрашивай имя. Если не знаешь — коротко представься и спроси, как её зовут.)");
         }
         break;
       case "input_audio_buffer.speech_started":

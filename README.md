@@ -1,7 +1,7 @@
 # Звонок Шерифу (Sheriff video call)
 
 Node server (express) serves `public/` and mints short-lived xAI realtime client secrets at `POST /api/session`.
-The browser connects directly to `wss://api.x.ai/v1/realtime` (grok-voice-latest, server VAD, 24 kHz PCM) with the
+The browser connects to this server's `/rt` WebSocket, which proxies `wss://api.x.ai/v1/realtime` (grok-voice-latest, server VAD, 24 kHz PCM) with the
 `xai-client-secret.<token>` subprotocol; the long-lived key never leaves the server.
 
 Run:
@@ -17,3 +17,5 @@ URL options (tune without redeploying):
 - ?ns=1 enable browser noise suppression (off by default, it eats child voices), ?agc=0 disable auto gain
 Server defaults via env: VAD_THRESHOLD, VAD_SILENCE_MS, VAD_PREFIX_MS, SHERIFF_VOICE.
 Persona prompt: persona.md. Calls auto-end after 20 min; token minting capped at 60/hour.
+
+Private per-child facts go ONLY in the env vars CHILD_CONTEXT (appended to the persona server-side) and CHILD_KEYTERMS (comma-separated ASR hints). The server never sends instructions to the browser.
