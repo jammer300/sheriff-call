@@ -9,6 +9,24 @@ const BARGE_RMS = parseFloat(params.get("barge") || "0.06");
 const MAX_CALL_MS = 20 * 60 * 1000;
 const RATE = 24000;
 
+const CHARS = {
+  sheriff: { name: "Шериф", dat: "Шерифу", he: "он", waits: "будет ждать" },
+  papillon: { name: "Папийон", dat: "Папийон", he: "она", waits: "будет ждать" },
+  dobie: { name: "Доби", dat: "Доби", he: "он", waits: "будет ждать" },
+};
+let charId = CHARS[params.get("c")] ? params.get("c") : "sheriff", LAYOUT = null;
+fetch("c/layout.json").then((r) => r.json()).then((j) => { LAYOUT = j; applyChar(charId); }).catch(() => {});
+function applyChar(c) {
+  charId = c; const ch = CHARS[c];
+  $("baseImg").src = `c/${c}/base.png`; $("mouth").src = `c/${c}/mouth.png`; $("blink").src = `c/${c}/blink.png`;
+  $("ringImg").src = `c/${c}/avatar.jpg`;
+  $("topName").textContent = ch.name; $("listenName").textContent = ch.name;
+  if (LAYOUT && LAYOUT[c]) ["mouth", "blink"].forEach((k) => {
+    const [x, y, w, h] = LAYOUT[c][k], el = $(k);
+    el.style.left = x + "%"; el.style.top = y + "%"; el.style.width = w + "%"; el.style.height = h + "%";
+  });
+  S.char = c;
+}
 const S = window.__sheriff = {
   state: "idle", events: [], audioChunks: 0, audioSamples: 0, transcripts: [], userTranscripts: [], errors: [],
   sessionCreated: false, sessionUpdated: false, speechStarted: 0,
@@ -159,6 +177,7 @@ async function connect(isReconnect) {
   // The server proxies the realtime session; persona/private context stay server-side.
   const q = new URLSearchParams();
   ["voice", "vad", "silence", "prefix", "name"].forEach((k) => { if (params.get(k)) q.set(k, params.get(k)); });
+  q.set("c", charId);
   q.set("rate", String(inRate));
   const url = (location.protocol === "https:" ? "wss://" : "ws://") + location.host + location.pathname.replace(/[^/]*$/, "") + "rt?" + q;
   return new Promise((resolve, reject) => {
@@ -242,7 +261,8 @@ function showCaption(t) {
 }
 
 /* ---------------- call flow ---------------- */
-async function startCall() {
+async function startCall(c) {
+  if (typeof c === "string" && CHARS[c]) applyChar(c);
   $("err").textContent = "";
   hangingUp = false; reconnects = 0; goodbyeSent = false;
   ctx = ctx || new (window.AudioContext || window.webkitAudioContext)();
@@ -253,8 +273,8 @@ async function startCall() {
     outGain.connect(analyser); outGain.connect(ctx.destination);
   }
   setState("ringing");
-  $("lobbyTitle").textContent = "Звоним Шерифу…";
-  $("lobbySub").textContent = "Сейчас он возьмёт трубку 🐶";
+  $("lobbyTitle").textContent = "Звоним: " + CHARS[charId].name + "…";
+  $("lobbySub").textContent = "Сейчас " + CHARS[charId].he + " возьмёт трубку 🐶";
   startRinging();
   const ringMin = new Promise((r) => setTimeout(r, 2600));
   try {
@@ -268,9 +288,9 @@ async function startCall() {
   } catch (e) {
     log("start error", String(e && e.message || e));
     if (hangingUp) return;
-    if (e && (e.name === "NotAllowedError" || e.name === "SecurityError")) fail("Разреши, пожалуйста, микрофон — без него Шериф тебя не услышит 🎤");
+    if (e && (e.name === "NotAllowedError" || e.name === "SecurityError")) fail("Разреши, пожалуйста, микрофон — без него " + CHARS[charId].name + " тебя не услышит 🎤");
     else if (String(e.message) === "nomedia") fail("Этот браузер не даёт микрофон. Открой страницу в Safari или Chrome по https.");
-    else fail("Шериф пока не отвечает. Попробуй ещё раз! (" + (e.message || e) + ")");
+    else fail(CHARS[charId].name + " пока не отвечает. Попробуй ещё раз! (" + (e.message || e) + ")");
   }
 }
 function enterCall() {
@@ -301,16 +321,15 @@ function hangUp() {
   hangingUp = true; cleanup(); blip(700, 300);
   setState("idle");
   $("lobbyTitle").textContent = "Пока-пока! 👋";
-  $("lobbySub").textContent = "Шериф будет ждать твоего звонка";
-  $("callBtn").querySelector("span").textContent = "Позвонить ещё раз";
+  $("lobbySub").textContent = CHARS[charId].name + " " + CHARS[charId].waits + " твоего звонка. Кому позвоним ещё?";
 }
 function fail(msg) {
   hangingUp = true; cleanup(); setState("idle");
-  $("lobbyTitle").textContent = "Шериф";
-  $("lobbySub").textContent = "Полицейский участок • на связи 🚓";
+  $("lobbyTitle").textContent = "Кому позвоним?";
+  $("lobbySub").textContent = "Полицейский участок • все на связи 🚓";
   $("err").textContent = msg;
 }
-$("callBtn").addEventListener("click", startCall);
+document.querySelectorAll(".pick").forEach((b) => b.addEventListener("click", () => startCall(b.dataset.c)));
 $("hangBtn").addEventListener("click", hangUp);
 $("cancelBtn").addEventListener("click", hangUp);
 $("micBtn").addEventListener("click", () => { muted = !muted; $("micBtn").classList.toggle("off", muted); $("micBtn").textContent = muted ? "🔇" : "🎤"; });

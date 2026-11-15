@@ -56,3 +56,15 @@ html,body{height:100%;overflow:hidden;background:#1e3a8a;font-family:"Nunito","C
 .state-incall #topbar,.state-incall #pip,.state-incall #controls{opacity:1;pointer-events:auto}
 #debug{position:absolute;left:4px;bottom:4px;max-height:40vh;max-width:60vw;overflow:auto;font:11px monospace;background:rgba(0,0,0,.6);color:#0f0;z-index:20;display:none;white-space:pre-wrap}
 .debug #debug{display:block}
+
+#ringAvatar{display:none}
+.state-ringing #ringAvatar{display:block}
+.state-ringing #picker{display:none}
+#picker{display:flex;gap:min(4vw,28px);flex-wrap:wrap;justify-content:center;margin-top:14px}
+.pick{background:none;border:0;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:10px;color:#fff;font-family:inherit;-webkit-appearance:none}
+.pick .pa{position:relative;width:min(25vw,170px);aspect-ratio:1;display:block;border-radius:50%;animation:bob 2.6s ease-in-out infinite}
+.pick:nth-child(2) .pa{animation-delay:.4s}.pick:nth-child(3) .pa{animation-delay:.8s}
+.pick img{width:100%;height:100%;border-radius:50%;object-fit:cover;border:6px solid #fff;box-shadow:0 10px 0 #15803d,0 16px 26px rgba(0,0,0,.3);background:#e0f2fe}
+.pick i{position:absolute;right:-4px;bottom:-2px;width:44%;aspect-ratio:1;border-radius:50%;background:#22c55e;display:grid;place-items:center;font-style:normal;font-size:min(6vw,32px);border:4px solid #fff;box-shadow:0 4px 10px rgba(0,0,0,.25);animation:callpulse 1.8s ease-in-out infinite}
+.pick b{font-size:min(5.2vw,26px);font-weight:900;text-shadow:0 2px 8px rgba(0,0,0,.3)}
+.pick:active .pa{transform:scale(.92)}

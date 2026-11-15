@@ -9,7 +9,6 @@ const { WebSocketServer, WebSocket } = require("ws");
 
 const KEY = process.env.XAI_API_KEY || process.env.LLM_API_KEY;
 const PORT = process.env.PORT || 8787;
-const VOICE = process.env.SHERIFF_VOICE || "rex";
 const MODEL = process.env.SHERIFF_MODEL || "grok-voice-latest";
 const VAD_THRESHOLD = parseFloat(process.env.VAD_THRESHOLD || "0.35");
 const VAD_SILENCE_MS = parseInt(process.env.VAD_SILENCE_MS || "1000", 10);
@@ -41,7 +40,14 @@ function momentHint(h) {
   if (h >= 19 && h < 21) return "evening — dinner, getting ready for bed, brushing teeth, a bedtime story";
   return "late night — she should be sleeping: be very soft, short, and kindly suggest it is time to sleep, then say a warm goodnight";
 }
-const persona = fs.readFileSync(path.join(__dirname, "persona.md"), "utf8");
+const personaTpl = fs.readFileSync(path.join(__dirname, "persona.md"), "utf8");
+const CHARS = JSON.parse(fs.readFileSync(path.join(__dirname, "characters.json"), "utf8"));
+if (process.env.SHERIFF_VOICE) CHARS.sheriff.voice = process.env.SHERIFF_VOICE;
+function personaFor(c) {
+  const ch = CHARS[c];
+  return personaTpl.replace("{{ROLE}}", ch.role).replace("{{GAMES}}", ch.games).replace("{{STORIES}}", ch.stories)
+    .replace("{{SOUNDS}}", ch.sounds).replace("{{HEARD}}", ch.heard).replace("{{STAY}}", ch.stay).replace("{{GENDER_RULE}}", ch.gender);
+}
 
 const app = express();
 app.use(express.json());
@@ -69,7 +75,8 @@ function buildSession(q) {
     idle_timeout_ms: 25000,
   };
   const name = (q.get("name") || "").trim().slice(0, 30).replace(/[^\p{L}\p{M} -]/gu, "");
-  let instructions = persona;
+  const c = CHARS[q.get("c")] ? q.get("c") : "sheriff";
+  let instructions = personaFor(c);
   const t = timeContext();
   instructions += "\n\n## Current time\n- " + t.text +
     "\n- Right now it fits to talk about: " + momentHint(t.h) + "." +
@@ -79,8 +86,9 @@ function buildSession(q) {
   else if (name) instructions += `\n\n## Known facts\n- The girl's name is probably "${name}". If what you hear sounds even a little like "${name}", it is her name.`;
   const keyterms = ["Шериф", "Гав", ...CHILD_KEYTERMS]; if (name) keyterms.push(name);
   const rate = RATES.includes(parseInt(q.get("rate"), 10)) ? parseInt(q.get("rate"), 10) : 24000;
-  const voice = /^[a-z0-9_-]{2,40}$/i.test(q.get("voice") || "") ? q.get("voice") : VOICE;
+  const voice = /^[a-z0-9_-]{2,40}$/i.test(q.get("voice") || "") ? q.get("voice") : CHARS[c].voice;
   return {
+    _char: c,
     voice, instructions, turn_detection: turn,
     audio: {
       input: { format: { type: "audio/pcm", rate }, transcription: { language_hint: "ru", keyterms: [...new Set(keyterms)].slice(0, 100) } },
@@ -108,7 +116,8 @@ server.on("upgrade", (req, sock, head) => {
 
 function bridge(client, q) {
   const session = buildSession(q);
-  console.log(new Date().toISOString(), "call start", JSON.stringify({ voice: session.voice, turn: session.turn_detection, rate: session.audio.input.format.rate, ctx: !!CHILD_CONTEXT, routine: !!CHILD_ROUTINE, time: timeContext().text }));
+  const charId = session._char; delete session._char;
+  console.log(new Date().toISOString(), "call start", JSON.stringify({ char: charId, voice: session.voice, turn: session.turn_detection, rate: session.audio.input.format.rate, ctx: !!CHILD_CONTEXT, routine: !!CHILD_ROUTINE, time: timeContext().text }));
   const up = new WebSocket("wss://api.x.ai/v1/realtime?model=" + encodeURIComponent(MODEL), { headers: { Authorization: `Bearer ${KEY}` } });
   const queue = []; let configured = false;
   const started = Date.now();

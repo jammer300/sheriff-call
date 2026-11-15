@@ -5,8 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
 <meta name="theme-color" content="#1e3a8a">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<title>Позвонить Шерифу</title>
-<link rel="icon" href="avatar.jpg">
+<title>Звонок в полицейский участок</title>
+<link rel="icon" href="c/sheriff/avatar.jpg">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -16,18 +16,18 @@
     <div id="bg"></div>
     <div id="sheriffWrap">
       <div id="sheriff">
-        <img src="sheriff.png" class="base" alt="Шериф" draggable="false">
-        <img src="blink.png" id="blink" class="ov" alt="" draggable="false">
-        <img src="mouth.png" id="mouth" class="ov" alt="" draggable="false">
+        <img src="c/sheriff/base.png" id="baseImg" class="base" alt="" draggable="false">
+        <img src="c/sheriff/blink.png" id="blink" class="ov" alt="" draggable="false">
+        <img src="c/sheriff/mouth.png" id="mouth" class="ov" alt="" draggable="false">
       </div>
     </div>
     <img id="desk" src="desk.png" alt="" draggable="false">
-    <div id="listen" class="bubble">👂 Шериф слушает…</div>
+    <div id="listen" class="bubble">👂 <span id="listenName">Шериф</span> слушает…</div>
   </div>
 
   <!-- call chrome -->
   <div id="topbar">
-    <span class="rec"></span><span class="name">Шериф</span><span id="timer">00:00</span>
+    <span class="rec"></span><span class="name" id="topName">Шериф</span><span id="timer">00:00</span>
   </div>
   <div id="pip"><video id="selfie" autoplay playsinline muted></video><div class="pipLabel">Я</div></div>
   <div id="caption"></div>
@@ -41,13 +41,14 @@
 
   <!-- lobby / ringing / ended overlay -->
   <div id="lobby">
-    <div class="avatarRing"><div class="ring r1"></div><div class="ring r2"></div><img src="avatar.jpg" class="avatar" alt=""></div>
-    <h1 id="lobbyTitle">Шериф</h1>
-    <p id="lobbySub">Полицейский участок • на связи 🚓</p>
-    <button id="callBtn" class="callBtn">
-      <svg viewBox="0 0 24 24" width="40" height="40"><path fill="#fff" d="M6.62 10.79a15.05 15.05 0 0 0 6.59 6.59l2.2-2.2c.27-.27.67-.36 1.02-.24 1.12.37 2.33.57 3.57.57.55 0 1 .45 1 1V20c0 .55-.45 1-1 1C10.61 21 3 13.39 3 4c0-.55.45-1 1-1h3.5c.55 0 1 .45 1 1 0 1.25.2 2.45.57 3.57.11.35.03.74-.25 1.02l-2.2 2.2z"/></svg>
-      <span>Позвонить шерифу</span>
-    </button>
+    <div class="avatarRing" id="ringAvatar"><div class="ring r1"></div><div class="ring r2"></div><img src="c/sheriff/avatar.jpg" class="avatar" id="ringImg" alt=""></div>
+    <h1 id="lobbyTitle">Кому позвоним?</h1>
+    <p id="lobbySub">Полицейский участок • все на связи 🚓</p>
+    <div id="picker">
+      <button class="pick" data-c="sheriff"><span class="pa"><img src="c/sheriff/avatar.jpg" alt=""><i>📞</i></span><b>Шериф</b></button>
+      <button class="pick" data-c="papillon"><span class="pa"><img src="c/papillon/avatar.jpg" alt=""><i>📞</i></span><b>Папийон</b></button>
+      <button class="pick" data-c="dobie"><span class="pa"><img src="c/dobie/avatar.jpg" alt=""><i>📞</i></span><b>Доби</b></button>
+    </div>
     <button id="cancelBtn" class="round red" title="Отмена">
       <svg viewBox="0 0 24 24" width="38" height="38"><path fill="#fff" d="M12 9c-1.6 0-3.15.25-4.6.72v3.1c0 .39-.23.74-.56.9-.98.49-1.87 1.12-2.66 1.85-.18.18-.43.28-.7.28-.28 0-.53-.11-.71-.29L.29 13.08a.996.996 0 0 1 0-1.41C3.34 8.78 7.46 7 12 7s8.66 1.78 11.71 4.67c.18.18.29.43.29.71 0 .28-.11.53-.29.71l-2.48 2.48c-.18.18-.43.29-.71.29-.27 0-.52-.11-.7-.28a11.27 11.27 0 0 0-2.67-1.85.996.996 0 0 1-.56-.9v-3.1C15.15 9.25 13.6 9 12 9z"/></svg>
     </button>
