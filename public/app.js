@@ -28,7 +28,6 @@ let ctx, micStream, camStream, ws, workletNode, micSource, outGain, analyser;
 let nextPlay = 0, sources = [], curItem = null, curItemStart = 0;
 let callStart = 0, timerInt, ringTimer, wakeLock, muted = false;
 let hangingUp = false, reconnects = 0, firstUpdate = true, goodbyeSent = false;
-let resampPos = 0, pending = [], pendingLen = 0, loudRun = 0;
 
 /* ---------------- ringing tone ---------------- */
 function ringOnce() {
@@ -78,9 +77,18 @@ function stopPlayback() {
 function isSpeaking() { return ctx && nextPlay > ctx.currentTime; }
 
 /* ---------------- audio in ---------------- */
+// Mic is sent at the AudioContext's native rate when the API supports it (no resampling);
+// otherwise low-pass + resample to 24 kHz.
+const API_RATES = [8000, 11025, 16000, 22050, 24000, 32000, 44100, 48000];
+const NS = params.get("ns") === "1";            // noise suppression off by default (it eats child voices)
+const AGC = params.get("agc") !== "0";          // auto gain on by default
+const CHUNK_MS = 40;
+const PREROLL_MS = parseInt(params.get("preroll") || "400", 10);
+const HANG_MS = parseInt(params.get("hang") || "900", 10);
+let inRate = RATE, micBuf = [], micBufLen = 0, preroll = [], prerollLen = 0, gateOpenUntil = 0, lpPrev = 0, rsPos = 0, rsLast = 0;
 const workletCode = `class Cap extends AudioWorkletProcessor{process(i){const c=i[0]&&i[0][0];if(c)this.port.postMessage(c.slice(0));return true}}registerProcessor('cap',Cap);`;
 async function startMic() {
-  micStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 } });
+  micStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: NS, autoGainControl: AGC, channelCount: 1 } });
   const url = URL.createObjectURL(new Blob([workletCode], { type: "application/javascript" }));
   await ctx.audioWorklet.addModule(url);
   micSource = ctx.createMediaStreamSource(micStream);
@@ -88,45 +96,67 @@ async function startMic() {
   workletNode.port.onmessage = (e) => onMicFrame(e.data);
   const sink = ctx.createGain(); sink.gain.value = 0;
   micSource.connect(workletNode); workletNode.connect(sink); sink.connect(ctx.destination);
+  inRate = API_RATES.includes(ctx.sampleRate) ? ctx.sampleRate : RATE;
+  S.micRate = inRate; S.ctxRate = ctx.sampleRate; S.ns = NS; S.agc = AGC;
+  log("mic", { ctxRate: ctx.sampleRate, sendRate: inRate, ns: NS, agc: AGC });
+}
+function resampleTo24k(f32) {
+  // fallback only (ctx rate not accepted by the API): 1-pole low-pass then linear interpolation
+  const ratio = ctx.sampleRate / RATE, a = Math.min(1, (2 * Math.PI * 10000) / ctx.sampleRate);
+  const x = new Float32Array(f32.length);
+  for (let i = 0; i < f32.length; i++) { lpPrev += a * (f32[i] - lpPrev); x[i] = lpPrev; }
+  const out = [];
+  while (rsPos < x.length) {
+    const i = Math.floor(rsPos), fr = rsPos - i;
+    const s0 = i === 0 ? rsLast : x[i - 1], s1 = x[i];   // rsPos is offset by +1 sample (rsLast = previous chunk tail)
+    out.push(s0 + (s1 - s0) * fr); rsPos += ratio;
+  }
+  rsPos -= x.length; rsLast = x[x.length - 1];
+  return Float32Array.from(out);
 }
 function onMicFrame(f32) {
-  // resample ctx.sampleRate -> 24000 (linear)
-  const ratio = ctx.sampleRate / RATE;
-  const out = [];
-  while (resampPos < f32.length - 1) {
-    const i = Math.floor(resampPos), fr = resampPos - i;
-    out.push(f32[i] * (1 - fr) + f32[i + 1] * fr);
-    resampPos += ratio;
-  }
-  resampPos -= f32.length;
-  if (resampPos < 0) resampPos = 0;
-  pending.push(Float32Array.from(out)); pendingLen += out.length;
-  if (pendingLen >= RATE / 10) flushMic();
+  const x = inRate === ctx.sampleRate ? f32 : resampleTo24k(f32);
+  micBuf.push(x); micBufLen += x.length;
+  if (micBufLen >= inRate * CHUNK_MS / 1000) flushMic();
+}
+function toB64Pcm(f32) {
+  const pcm = new Int16Array(f32.length);
+  for (let i = 0; i < f32.length; i++) { const v = Math.max(-1, Math.min(1, f32[i])); pcm[i] = v < 0 ? v * 0x8000 : v * 0x7fff; }
+  const u8 = new Uint8Array(pcm.buffer); let bin = "";
+  for (let i = 0; i < u8.length; i += 0x8000) bin += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
+  return btoa(bin);
+}
+function sendAudio(f32) {
+  if (ws && ws.readyState === 1 && S.sessionUpdated) ws.send(JSON.stringify({ type: "input_audio_buffer.append", audio: toB64Pcm(f32) }));
 }
 function flushMic() {
-  const all = new Float32Array(pendingLen); let o = 0;
-  pending.forEach((p) => { all.set(p, o); o += p.length; });
-  pending = []; pendingLen = 0;
+  const all = new Float32Array(micBufLen); let o = 0;
+  micBuf.forEach((p) => { all.set(p, o); o += p.length; });
+  micBuf = []; micBufLen = 0;
   let sum = 0; for (let i = 0; i < all.length; i++) sum += all[i] * all[i];
   const rms = Math.sqrt(sum / all.length); S.micRms = rms;
-  let send = !muted;
-  // echo guard: while Sheriff talks, only pass clearly loud speech (barge-in)
-  if (send && ctx.currentTime < nextPlay + 0.3) {
-    loudRun = rms > BARGE_RMS ? loudRun + 1 : 0;
-    if (loudRun < 2) send = false;
-  } else loudRun = 0;
-  const pcm = new Int16Array(all.length);
-  if (send) for (let i = 0; i < all.length; i++) { const s = Math.max(-1, Math.min(1, all[i])); pcm[i] = s < 0 ? s * 0x8000 : s * 0x7fff; }
-  if (ws && ws.readyState === 1 && S.sessionUpdated) {
-    const u8 = new Uint8Array(pcm.buffer); let bin = "";
-    for (let i = 0; i < u8.length; i += 0x8000) bin += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
-    ws.send(JSON.stringify({ type: "input_audio_buffer.append", audio: btoa(bin) }));
+  const nowMs = performance.now();
+  if (muted) { preroll = []; prerollLen = 0; sendAudio(new Float32Array(all.length)); S.gate = "muted"; return; }
+  // Echo gate ONLY while Sheriff's audio is actually playing (plus 150 ms tail).
+  const sheriffTalking = ctx.currentTime < nextPlay + 0.15;
+  if (!sheriffTalking) {
+    if (prerollLen) { preroll.forEach(sendAudio); preroll = []; prerollLen = 0; }
+    sendAudio(all); S.gate = "open"; return;
   }
+  // While he talks: open fast on loud speech (barge-in), close slowly (hangover), with pre-roll so onsets aren't lost.
+  if (rms > BARGE_RMS) gateOpenUntil = nowMs + HANG_MS;
+  if (nowMs < gateOpenUntil) {
+    if (prerollLen) { preroll.forEach(sendAudio); preroll = []; prerollLen = 0; }
+    sendAudio(all); S.gate = "barge"; return;
+  }
+  preroll.push(all); prerollLen += all.length;
+  while (prerollLen - preroll[0].length >= inRate * PREROLL_MS / 1000) prerollLen -= preroll.shift().length;
+  sendAudio(new Float32Array(all.length)); S.gate = "echo-guard";
 }
 
 /* ---------------- realtime session ---------------- */
 async function connect(isReconnect) {
-  const r = await fetch("api/session", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ voice: params.get("voice") || "" }) });
+  const r = await fetch("api/session", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ voice: params.get("voice") || "", vad: params.get("vad"), silence: params.get("silence"), prefix: params.get("prefix"), name: params.get("name") }) });
   if (!r.ok) throw new Error("Сервер не дал ключ (" + r.status + ")");
   const cfg = await r.json();
   return new Promise((resolve, reject) => {
@@ -138,6 +168,7 @@ async function connect(isReconnect) {
       const e = JSON.parse(m.data);
       if (e.type === "session.created" && !done) {
         done = true; clearTimeout(to); S.sessionCreated = true;
+        cfg.session.audio.input.format.rate = inRate; S.turn = cfg.session.turn_detection; log("turn_detection", cfg.session.turn_detection);
         sock.send(JSON.stringify({ type: "session.update", session: cfg.session }));
         ws = sock; firstUpdate = true; attach(sock, isReconnect); resolve();
       }
@@ -313,5 +344,6 @@ function frame(now) {
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
+if (DEBUG) setInterval(() => { if (S.state === "incall") $("debug").dataset.x = 1, log("mic rms", (S.micRms || 0).toFixed(3), "gate", S.gate); }, 1000);
 document.addEventListener("visibilitychange", () => { if (!document.hidden && ctx && ctx.state === "suspended") ctx.resume(); });
 })();

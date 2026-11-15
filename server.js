@@ -6,6 +6,9 @@ const KEY = process.env.LLM_API_KEY || process.env.XAI_API_KEY;
 const PORT = process.env.PORT || 8787;
 const VOICE = process.env.SHERIFF_VOICE || "rex";
 const MODEL = process.env.SHERIFF_MODEL || "grok-voice-latest";
+const VAD_THRESHOLD = parseFloat(process.env.VAD_THRESHOLD || "0.35");
+const VAD_SILENCE_MS = parseInt(process.env.VAD_SILENCE_MS || "1000", 10);
+const VAD_PREFIX_MS = parseInt(process.env.VAD_PREFIX_MS || "500", 10);
 const persona = fs.readFileSync(path.join(__dirname, "persona.md"), "utf8");
 
 app.use(express.json());
@@ -30,16 +33,29 @@ app.post("/api/session", async (req, res) => {
     });
     const j = await r.json();
     if (!r.ok || !j.value) { console.error("mint failed", r.status, j); return res.status(502).json({ error: "mint failed" }); }
+    const b = req.body || {};
+    const num = (v, lo, hi, d) => { const n = parseFloat(v); return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : d; };
+    const turn = {
+      type: "server_vad",
+      threshold: num(b.vad, 0.05, 0.95, VAD_THRESHOLD),
+      silence_duration_ms: Math.round(num(b.silence, 200, 3000, VAD_SILENCE_MS)),
+      prefix_padding_ms: Math.round(num(b.prefix, 0, 2000, VAD_PREFIX_MS)),
+      idle_timeout_ms: 25000,
+    };
+    const childName = typeof b.name === "string" ? b.name.trim().slice(0, 30).replace(/[^\p{L}\p{M} -]/gu, "") : "";
+    let instructions = persona;
+    if (childName) instructions += `\n\n## Known facts\n- The girl's name is probably "${childName}". If what you hear sounds even a little like "${childName}", it is her name. Still let her tell you her name herself.`;
+    const keyterms = ["Шериф", "Гав"]; if (childName) keyterms.push(childName);
     const voice = (req.body && /^[a-z0-9_-]{2,40}$/i.test(req.body.voice || "")) ? req.body.voice : VOICE;
-    console.log(new Date().toISOString(), "session minted, voice", voice);
+    console.log(new Date().toISOString(), "session minted, voice", voice, JSON.stringify(turn), childName ? "name set" : "");
     res.json({
       token: j.value, expires_at: j.expires_at, model: MODEL,
       session: {
         voice,
-        instructions: persona,
-        turn_detection: { type: "server_vad", idle_timeout_ms: 25000 },
+        instructions,
+        turn_detection: turn,
         audio: {
-          input: { format: { type: "audio/pcm", rate: 24000 }, transcription: { language_hint: "ru" } },
+          input: { format: { type: "audio/pcm", rate: 24000 }, transcription: { language_hint: "ru", keyterms } },
           output: { format: { type: "audio/pcm", rate: 24000 } },
         },
       },
