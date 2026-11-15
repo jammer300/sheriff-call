@@ -9,18 +9,23 @@ const BARGE_RMS = parseFloat(params.get("barge") || "0.06");
 const MAX_CALL_MS = 20 * 60 * 1000;
 const RATE = 24000;
 
+const V = window.V || "";
+const A = (p) => p + (V ? (p.includes("?") ? "&" : "?") + "v=" + V : "");
 const CHARS = {
   sheriff: { name: "Шериф", dat: "Шерифу", he: "он", waits: "будет ждать" },
   papillon: { name: "Папийон", dat: "Папийон", he: "она", waits: "будет ждать" },
   dobie: { name: "Доби", dat: "Доби", he: "он", waits: "будет ждать" },
 };
 let charId = CHARS[params.get("c")] ? params.get("c") : "sheriff", LAYOUT = null;
-fetch("c/layout.json").then((r) => r.json()).then((j) => { LAYOUT = j; applyChar(charId); }).catch(() => {});
-function applyChar(c) {
+fetch(A("c/layout.json")).then((r) => r.json()).then((j) => { LAYOUT = j; applyChar(charId, false); }).catch(() => {});
+function loadCharImages(c) {
+  $("baseImg").src = A(`c/${c}/base.png`); $("mouth").src = A(`c/${c}/mouth.png`); $("blink").src = A(`c/${c}/blink.png`);
+}
+function applyChar(c, load = true) {
   if (typeof renderFriendsBar === "function") setTimeout(renderFriendsBar, 0);
   charId = c; const ch = CHARS[c];
-  $("baseImg").src = `c/${c}/base.png`; $("mouth").src = `c/${c}/mouth.png`; $("blink").src = `c/${c}/blink.png`;
-  $("ringImg").src = `c/${c}/avatar.jpg`;
+  if (load) loadCharImages(c);
+  $("ringImg").src = A(`c/${c}/avatar.jpg`);
   $("topName").textContent = ch.name; $("listenName").textContent = ch.name;
   if (LAYOUT && LAYOUT[c]) ["mouth", "blink"].forEach((k) => {
     const [x, y, w, h] = LAYOUT[c][k], el = $(k);
@@ -78,6 +83,8 @@ function blip(f1, f2) {
 
 /* ---------------- audio out ---------------- */
 function playPcm16(b64, dest) {
+  if (S.state === "ringing" && !dest) { heldAudio.push(b64); return; }
+  if (!S.tFirstAudio && S.tPick) S.tFirstAudio = Math.round(performance.now() - S.tPick);
   const bin = atob(b64); const n = bin.length >> 1;
   if (!n) return;
   const buf = ctx.createBuffer(1, n, RATE); const ch = buf.getChannelData(0);
@@ -221,7 +228,7 @@ function attach(sock, isReconnect) {
         if (firstUpdate) S.turn = e.session && e.session.turn_detection;
         if (firstUpdate) {
           firstUpdate = false; S.sessionUpdated = true; respActive = false; pendingFn = 0; needContinue = false;
-          if (S.state === "ringing") enterCall();
+          if (S.state === "ringing" && ringDone) enterCall();
           sayAsUser(isReconnect
             ? "(Служебная заметка, не читай вслух: связь на секунду прервалась и восстановилась. Весело скажи, что связь вернулась, и продолжай болтать с девочкой.)"
             : "(Служебная заметка, не читай вслух: девочка только что позвонила тебе по видеосвязи. Радостно поздоровайся первым. Если ты уже знаешь её имя — назови её по имени и не спрашивай имя. Если не знаешь — коротко представься и спроси, как её зовут.)");
@@ -298,16 +305,22 @@ async function startCall(c) {
   setState("ringing");
   $("lobbyTitle").textContent = "Звоним: " + CHARS[charId].name + "…";
   $("lobbySub").textContent = "Сейчас " + CHARS[charId].he + " возьмёт трубку 🐶";
-  startRinging();
-  const ringMin = new Promise((r) => setTimeout(r, 2600));
+  startRinging(); S.tPick = performance.now();
+  ringDone = false; heldAudio = [];
+  const ringMin = new Promise((r) => setTimeout(() => { ringDone = true; r(); if (S.sessionUpdated && S.state === "ringing") enterCall(); }, 1800));
   try {
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error("nomedia");
-    await startMic();
+    inRate = API_RATES.includes(ctx.sampleRate) ? ctx.sampleRate : RATE;
+    // mic permission, server wake-up and the voice connection all run at the same time;
+    // the greeting is generated during the ringing and starts the moment the call "picks up"
+    const micP = startMic();
     navigator.mediaDevices.getUserMedia({ video: { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false })
       .then((s) => { camStream = s; $("selfie").srcObject = s; }).catch((e) => log("no camera", String(e)));
-    await ringMin;
-    if (hangingUp) return;
-    await connectWithRetry(false);
+    if (!warmOk) $("lobbySub").textContent = CHARS[charId].name + " уже едет… 🚓";
+    const connP = warmP.then(() => { if (hangingUp) return; $("lobbySub").textContent = "Сейчас " + CHARS[charId].he + " возьмёт трубку 🐶"; return connectWithRetry(false); });
+    await micP;
+    await connP;
+    S.tConnected = Math.round(performance.now() - S.tPick);
   } catch (e) {
     log("start error", String(e && e.message || e));
     if (hangingUp) return;
@@ -316,9 +329,14 @@ async function startCall(c) {
     else fail(CHARS[charId].name + " пока не отвечает. Попробуй ещё раз! (" + (e.message || e) + ")");
   }
 }
+let ringDone = true, heldAudio = [];
 function enterCall() {
+  if (S.state === "incall") return;
   stopRinging(); blip(500, 900);
+  S.tInCall = Math.round(performance.now() - (S.tPick || 0));
   setState("incall"); callStart = Date.now();
+  const held = heldAudio; heldAudio = []; held.forEach((b) => playPcm16(b));
+  setTimeout(preloadRooms, 0);
   timerInt = setInterval(() => {
     const s = Math.floor((Date.now() - callStart) / 1000);
     $("timer").textContent = String(Math.floor(s / 60)).padStart(2, "0") + ":" + String(s % 60).padStart(2, "0");
@@ -437,7 +455,7 @@ function addGuest(c) {
   if (guestOf(c) || c === charId || !CHARS[c]) return guestOf(c);
   const slot = guests.some((g) => g.slot === "L") ? "R" : "L";
   const wrap = el("div", "guest " + slot); const walk = el("div", "gwalk"); const body = el("div", "gbody");
-  const mk = (k, cls) => { const i = document.createElement("img"); i.src = `c/${c}/${k}.png`; i.className = cls; i.draggable = false; return i; };
+  const mk = (k, cls) => { const i = document.createElement("img"); i.src = A(`c/${c}/${k}.png`); i.className = cls; i.draggable = false; return i; };
   const base = mk("base", "base"), blink = mk("blink", "ov"), mouth = mk("mouth", "ov");
   if (LAYOUT && LAYOUT[c]) [["mouth", mouth], ["blink", blink]].forEach(([k, e]) => { const [x, y, w, h] = LAYOUT[c][k]; Object.assign(e.style, { left: x + "%", top: y + "%", width: w + "%", height: h + "%" }); });
   mouth.style.opacity = 0; blink.style.opacity = 0;
@@ -480,7 +498,7 @@ function renderFriendsBar() {
   const bar = $("friends"); if (!bar) return; bar.innerHTML = "";
   Object.keys(CHARS).filter((c) => c !== charId).forEach((c) => {
     const b = document.createElement("button"); b.dataset.c = c; b.title = (guestOf(c) ? "Попрощаться: " : "Позвать: ") + CHARS[c].name;
-    const im = document.createElement("img"); im.src = `c/${c}/avatar.jpg`; b.appendChild(im); b.appendChild(el("i", null, guestOf(c) ? "✕" : "+"));
+    const im = document.createElement("img"); im.src = A(`c/${c}/avatar.jpg`); b.appendChild(im); b.appendChild(el("i", null, guestOf(c) ? "✕" : "+"));
     b.classList.toggle("cur", !!guestOf(c));
     b.addEventListener("click", () => {
       if (!ws || !S.sessionUpdated) return;
@@ -632,10 +650,14 @@ function sfx(kind, k) {
 
 /* ---------------- rooms ---------------- */
 const ROOMS = { office: { name: "кабинет" }, garage: { name: "гараж" }, playroom: { name: "игровую" }, kitchen: { name: "кухню" } };
-Object.keys(ROOMS).forEach((r) => { const i = new Image(); i.src = `rooms/${r}.jpg`; const j = new Image(); j.src = `rooms/${r}_fg.png`; });
+let roomsPreloaded = false;
+function preloadRooms() {   // other rooms only after the call is connected, when the network is idle
+  if (roomsPreloaded) return; roomsPreloaded = true;
+  Object.keys(ROOMS).forEach((r, k) => setTimeout(() => { const i = new Image(); i.src = A(`rooms/${r}.jpg`); const j = new Image(); j.src = A(`rooms/${r}_fg.png`); }, 3000 + k * 800));
+}
 let roomBusy = false;
 function paintRoom(r) {
-  $("bg").style.backgroundImage = `url(rooms/${r}.jpg)`; $("desk").src = `rooms/${r}_fg.png`;
+  $("bg").style.backgroundImage = `url(${A(`rooms/${r}.jpg`)})`; const f = A(`rooms/${r}_fg.png`); if (!$("desk").src.endsWith(f)) $("desk").src = f;
   document.querySelectorAll("#rooms button").forEach((b) => b.classList.toggle("cur", b.dataset.r === r));
 }
 function setRoom(r, instant) {
@@ -735,5 +757,23 @@ function frame(now) {
 }
 requestAnimationFrame(frame);
 if (DEBUG) setInterval(() => { if (S.state === "incall") $("debug").dataset.x = 1, log("mic rms", (S.micRms || 0).toFixed(3), "gate", S.gate); }, 1000);
+/* ---------------- server warm-up + offline-ready lobby ---------------- */
+let warmOk = false;
+const warmP = (async () => {
+  const t0 = performance.now(); let slowShown = false;
+  const slow = setTimeout(() => { if (!warmOk && S.state === "idle") { slowShown = true; $("lobbySub").innerHTML = "🚓 Шериф уже едет<span class='dots'></span>"; } }, 700);
+  for (let i = 0; i < 60; i++) {
+    try { const r = await fetch("healthz", { cache: "no-store" }); if (r.ok) break; } catch (e) {}
+    await sleep(1500);
+  }
+  clearTimeout(slow); warmOk = true; S.tWarm = Math.round(performance.now() - t0);
+  if (slowShown && S.state === "idle") $("lobbySub").textContent = "Полицейский участок • все на связи 🚓";
+})();
+paintRoom("office");
+window.addEventListener("load", () => {
+  if ("serviceWorker" in navigator && location.protocol === "https:") navigator.serviceWorker.register("/sw.js").catch(() => {});
+  // the default character is the most likely pick: fetch it quietly once the page is idle
+  (window.requestIdleCallback || ((f) => setTimeout(f, 1200)))(() => { if (!$("baseImg").src) loadCharImages(charId); });
+});
 document.addEventListener("visibilitychange", () => { if (!document.hidden && ctx && ctx.state === "suspended") ctx.resume(); });
 })();

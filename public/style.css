@@ -3,7 +3,7 @@ html,body{height:100%;overflow:hidden;background:#1e3a8a;font-family:"Nunito","C
 #app{position:fixed;inset:0}
 #scene{position:absolute;inset:0;overflow:hidden;--S:min(66vh,94vw)}
 @media (min-aspect-ratio:1/1){#scene{--S:min(66vh,52vw)}}
-#bg{position:absolute;inset:-3%;background:url(rooms/office.jpg) center/cover no-repeat;animation:bgdrift 30s ease-in-out infinite alternate}
+#bg{position:absolute;inset:-3%;background:#9cc3e6 center/cover no-repeat;animation:bgdrift 30s ease-in-out infinite alternate}
 @keyframes bgdrift{from{transform:scale(1.02) translateX(-0.6%)}to{transform:scale(1.05) translateX(0.6%)}}
 #sheriffWrap{position:absolute;left:50%;bottom:calc(var(--S)*0.43);width:var(--S);height:var(--S);transform:translateX(-50%);z-index:2}
 #sheriff{position:absolute;inset:0;transform-origin:50% 95%;will-change:transform}
@@ -163,3 +163,4 @@ html,body{height:100%;overflow:hidden;background:#1e3a8a;font-family:"Nunito","C
 @keyframes cnt{from{transform:scale(1.8);opacity:0}to{transform:scale(1);opacity:1}}
 .looking #pip{transform:scale(1.35);transform-origin:top right;transition:transform .3s;border-color:#f472b6}
 #pip{transition:transform .3s}
+.dots::after{content:"";animation:dots 1.4s steps(4) infinite}@keyframes dots{0%{content:""}25%{content:"."}50%{content:".."}75%{content:"..."}}

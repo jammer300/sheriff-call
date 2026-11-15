@@ -6,8 +6,12 @@
 <meta name="theme-color" content="#1e3a8a">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <title>Звонок в полицейский участок</title>
-<link rel="icon" href="c/sheriff/avatar.jpg">
-<link rel="stylesheet" href="style.css">
+<link rel="icon" href="c/sheriff/avatar.jpg?v=__V__">
+<link rel="preload" href="app.js?v=__V__" as="script">
+<link rel="preload" href="rooms/office.jpg?v=__V__" as="image" fetchpriority="high">
+<link rel="preload" href="c/layout.json?v=__V__" as="fetch" crossorigin>
+<link rel="stylesheet" href="style.css?v=__V__">
+<script>window.V="__V__";</script>
 </head>
 <body>
 <div id="app" class="state-idle">
@@ -16,13 +20,13 @@
     <div id="bg"></div>
     <div id="sheriffWrap"><div id="walker"><div id="react">
       <div id="sheriff">
-        <img src="c/sheriff/base.png" id="baseImg" class="base" alt="" draggable="false">
-        <img src="c/sheriff/blink.png" id="blink" class="ov" alt="" draggable="false">
-        <img src="c/sheriff/mouth.png" id="mouth" class="ov" alt="" draggable="false">
+        <img id="baseImg" class="base" alt="" draggable="false">
+        <img id="blink" class="ov" alt="" draggable="false">
+        <img id="mouth" class="ov" alt="" draggable="false">
       </div>
     </div></div><div id="tapZone"></div></div>
     <div id="guests"></div>
-    <img id="desk" src="rooms/office_fg.png" alt="" draggable="false">
+    <img id="desk" src="rooms/office_fg.png?v=__V__" fetchpriority="low" alt="" draggable="false">
     <div id="board"></div>
     <div id="listen" class="bubble">👂 <span id="listenName">Шериф</span> слушает…</div>
   </div>
@@ -60,13 +64,13 @@
 
   <!-- lobby / ringing / ended overlay -->
   <div id="lobby">
-    <div class="avatarRing" id="ringAvatar"><div class="ring r1"></div><div class="ring r2"></div><img src="c/sheriff/avatar.jpg" class="avatar" id="ringImg" alt=""></div>
+    <div class="avatarRing" id="ringAvatar"><div class="ring r1"></div><div class="ring r2"></div><img src="c/sheriff/avatar.jpg?v=__V__" class="avatar" id="ringImg" alt=""></div>
     <h1 id="lobbyTitle">Кому позвоним?</h1>
     <p id="lobbySub">Полицейский участок • все на связи 🚓</p>
     <div id="picker">
-      <button class="pick" data-c="sheriff"><span class="pa"><img src="c/sheriff/avatar.jpg" alt=""><i>📞</i></span><b>Шериф</b></button>
-      <button class="pick" data-c="papillon"><span class="pa"><img src="c/papillon/avatar.jpg" alt=""><i>📞</i></span><b>Папийон</b></button>
-      <button class="pick" data-c="dobie"><span class="pa"><img src="c/dobie/avatar.jpg" alt=""><i>📞</i></span><b>Доби</b></button>
+      <button class="pick" data-c="sheriff"><span class="pa"><img src="c/sheriff/avatar.jpg?v=__V__" alt=""><i>📞</i></span><b>Шериф</b></button>
+      <button class="pick" data-c="papillon"><span class="pa"><img src="c/papillon/avatar.jpg?v=__V__" alt=""><i>📞</i></span><b>Папийон</b></button>
+      <button class="pick" data-c="dobie"><span class="pa"><img src="c/dobie/avatar.jpg?v=__V__" alt=""><i>📞</i></span><b>Доби</b></button>
     </div>
     <button id="cancelBtn" class="round red" title="Отмена">
       <svg viewBox="0 0 24 24" width="38" height="38"><path fill="#fff" d="M12 9c-1.6 0-3.15.25-4.6.72v3.1c0 .39-.23.74-.56.9-.98.49-1.87 1.12-2.66 1.85-.18.18-.43.28-.7.28-.28 0-.53-.11-.71-.29L.29 13.08a.996.996 0 0 1 0-1.41C3.34 8.78 7.46 7 12 7s8.66 1.78 11.71 4.67c.18.18.29.43.29.71 0 .28-.11.53-.29.71l-2.48 2.48c-.18.18-.43.29-.71.29-.27 0-.52-.11-.7-.28a11.27 11.27 0 0 0-2.67-1.85.996.996 0 0 1-.56-.9v-3.1C15.15 9.25 13.6 9 12 9z"/></svg>
@@ -75,6 +79,6 @@
   </div>
   <pre id="debug"></pre>
 </div>
-<script src="app.js"></script>
+<script src="app.js?v=__V__"></script>
 </body>
 </html>

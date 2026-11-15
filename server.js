@@ -133,8 +133,35 @@ async function describeImage(b64) {
 
 const app = express();
 app.use(express.json());
-app.use(express.static(path.join(__dirname, "public"), { maxAge: "1h" }));
-app.get("/healthz", (_, res) => res.json({ ok: true, ctx: CHILD_CONTEXT ? "set" : "none", routine: CHILD_ROUTINE ? "set" : "none", now: timeContext().text }));
+// ---------- static assets: versioned URLs (?v=BUILD) cached for a year, WebP when the browser accepts it ----------
+const PUB = path.join(__dirname, "public");
+const BUILD = (() => {
+  const h = crypto.createHash("sha1");
+  const walk = (d) => fs.readdirSync(d, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name)).forEach((f) => {
+    const p = path.join(d, f.name); if (f.isDirectory()) walk(p); else { h.update(p.slice(PUB.length)); h.update(fs.readFileSync(p)); }
+  });
+  walk(PUB); h.update(fs.readFileSync(__filename)); return h.digest("hex").slice(0, 10);
+})();
+const INDEX = fs.readFileSync(path.join(PUB, "index.html"), "utf8").replace(/__V__/g, BUILD);
+const SW = fs.readFileSync(path.join(PUB, "sw.js"), "utf8").replace(/__V__/g, BUILD);
+app.get(["/", "/index.html"], (_, res) => { res.set({ "Cache-Control": "no-cache", "Content-Type": "text/html; charset=utf-8" }); res.send(INDEX); });
+app.get("/sw.js", (_, res) => { res.set({ "Cache-Control": "no-cache", "Content-Type": "text/javascript; charset=utf-8", "Service-Worker-Allowed": "/" }); res.send(SW); });
+app.use((req, res, next) => {
+  if (req.method !== "GET" || !/\.(png|jpe?g)$/i.test(req.path)) return next();
+  res.vary("Accept");
+  if (/image\/webp/.test(req.get("accept") || "")) {
+    const w = req.path.replace(/\.(png|jpe?g)$/i, ".webp");
+    if (WEBP.has(w)) req.url = w + (req.url.includes("?") ? req.url.slice(req.url.indexOf("?")) : "");
+  }
+  next();
+});
+const WEBP = new Set();
+(function scan(d) { fs.readdirSync(d, { withFileTypes: true }).forEach((f) => { const p = path.join(d, f.name); if (f.isDirectory()) scan(p); else if (p.endsWith(".webp")) WEBP.add(p.slice(PUB.length).split(path.sep).join("/")); }); })(PUB);
+app.use(express.static(PUB, { index: false, setHeaders: (res, p) => {
+  const versioned = /[?&]v=/.test(res.req.originalUrl || "");
+  res.set("Cache-Control", versioned ? "public, max-age=31536000, immutable" : "public, max-age=300, must-revalidate");
+} }));
+app.get("/healthz", (_, res) => { res.set("Cache-Control", "no-store"); res.json({ ok: true, build: BUILD, up: Math.round(process.uptime()) }); });
 const server = http.createServer(app);
 
 // simple abuse guard (public URL)
