@@ -16,12 +16,29 @@ const VAD_SILENCE_MS = parseInt(process.env.VAD_SILENCE_MS || "1000", 10);
 const VAD_PREFIX_MS = parseInt(process.env.VAD_PREFIX_MS || "500", 10);
 const CHILD_CONTEXT = (process.env.CHILD_CONTEXT || "").trim();          // private, set only in Render env
 const CHILD_KEYTERMS = (process.env.CHILD_KEYTERMS || "").split(",").map((s) => s.trim()).filter(Boolean).slice(0, 90);
+const CHILD_ROUTINE = (process.env.CHILD_ROUTINE || "").trim();          // private, set only in Render env
+const TZ = process.env.SHERIFF_TZ || "Asia/Makassar";
+const TZ_LABEL = process.env.SHERIFF_TZ_LABEL || "по Бали";
+const WEEKDAYS = ["воскресенье", "понедельник", "вторник", "среда", "четверг", "пятница", "суббота"];
+const MONTHS = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря"];
+function timeContext(now = new Date()) {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat("en-US", { timeZone: TZ, year: "numeric", month: "numeric", day: "numeric", weekday: "short", hour: "numeric", minute: "2-digit", hourCycle: "h23" }).formatToParts(now).map((x) => [x.type, x.value]));
+  const h = parseInt(parts.hour, 10) % 24, m = parseInt(parts.minute, 10);
+  const wd = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].indexOf(parts.weekday);
+  const part = h < 5 ? "ночь" : h < 12 ? "утро" : h < 17 ? "день" : h < 22 ? "вечер" : "ночь";
+  const partGen = { "ночь": "ночи", "утро": "утра", "день": "дня", "вечер": "вечера" }[part];
+  const weekend = wd === 0 || wd === 6;
+  return {
+    h, m, wd, weekend,
+    text: `Сейчас ${WEEKDAYS[wd]}, ${parts.day} ${MONTHS[parseInt(parts.month, 10) - 1]}, ${h}:${String(m).padStart(2, "0")} ${partGen} ${TZ_LABEL} (${part}; ${weekend ? "выходной день" : "будний день"}).`,
+  };
+}
 const persona = fs.readFileSync(path.join(__dirname, "persona.md"), "utf8");
 
 const app = express();
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "public"), { maxAge: "1h" }));
-app.get("/healthz", (_, res) => res.json({ ok: true, ctx: CHILD_CONTEXT ? "set" : "none" }));
+app.get("/healthz", (_, res) => res.json({ ok: true, ctx: CHILD_CONTEXT ? "set" : "none", routine: CHILD_ROUTINE ? "set" : "none", now: timeContext().text }));
 const server = http.createServer(app);
 
 // simple abuse guard (public URL)
@@ -45,6 +62,11 @@ function buildSession(q) {
   };
   const name = (q.get("name") || "").trim().slice(0, 30).replace(/[^\p{L}\p{M} -]/gu, "");
   let instructions = persona;
+  const t = timeContext();
+  instructions += "\n\n## Current time\n- " + t.text +
+    "\n- Let the moment shape your questions: morning — how she slept, breakfast; midday — lunch; evening — dinner, plans, getting ready for bed; late night — kindly suggest it is time to sleep." +
+    "\n- Use the time naturally, ONE question at a time, never like an interview. Do not say the exact clock time unless she asks or it really matters. The call lasts at most 20 minutes, so this time stays valid for the whole call.";
+  if (CHILD_ROUTINE) instructions += "\n\n## Her daily routine (private; use it with the current time above)\n" + CHILD_ROUTINE;
   if (CHILD_CONTEXT) instructions += "\n\n## Known facts about the girl (private; you already know her)\n" + CHILD_CONTEXT;
   else if (name) instructions += `\n\n## Known facts\n- The girl's name is probably "${name}". If what you hear sounds even a little like "${name}", it is her name.`;
   const keyterms = ["Шериф", "Гав", ...CHILD_KEYTERMS]; if (name) keyterms.push(name);
@@ -78,7 +100,7 @@ server.on("upgrade", (req, sock, head) => {
 
 function bridge(client, q) {
   const session = buildSession(q);
-  console.log(new Date().toISOString(), "call start", JSON.stringify({ voice: session.voice, turn: session.turn_detection, rate: session.audio.input.format.rate, ctx: !!CHILD_CONTEXT }));
+  console.log(new Date().toISOString(), "call start", JSON.stringify({ voice: session.voice, turn: session.turn_detection, rate: session.audio.input.format.rate, ctx: !!CHILD_CONTEXT, routine: !!CHILD_ROUTINE, time: timeContext().text }));
   const up = new WebSocket("wss://api.x.ai/v1/realtime?model=" + encodeURIComponent(MODEL), { headers: { Authorization: `Bearer ${KEY}` } });
   const queue = []; let configured = false;
   const started = Date.now();
