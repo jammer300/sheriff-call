@@ -3,7 +3,7 @@ const V = "__V__";
 const CACHE = "sheriff-" + V;
 const CORE = ["/", `/style.css?v=${V}`, `/app.js?v=${V}`, `/rooms/office.jpg?v=${V}`, `/rooms/office_fg.png?v=${V}`, `/c/layout.json?v=${V}`,
   ...["sheriff", "papillon", "dobie"].map((c) => `/c/${c}/avatar.jpg?v=${V}`)];
-self.addEventListener("install", (e) => { e.waitUntil(caches.open(CACHE).then((c) => c.addAll(CORE)).then(() => self.skipWaiting())); });
+self.addEventListener("install", (e) => { e.waitUntil(caches.open(CACHE).then((c) => c.addAll(CORE.map((u) => /\.(png|jpe?g)\?/.test(u) ? new Request(u, { headers: { Accept: "image/webp,image/*,*/*;q=0.8" } }) : u))).then(() => self.skipWaiting())); });
 self.addEventListener("activate", (e) => {
   e.waitUntil(caches.keys().then((ks) => Promise.all(ks.filter((k) => k.startsWith("sheriff-") && k !== CACHE).map((k) => caches.delete(k)))).then(() => self.clients.claim()));
 });
@@ -24,7 +24,7 @@ self.addEventListener("fetch", (e) => {
   if (u.searchParams.has("v")) {
     // versioned static asset: cache-first, kept until the next version
     e.respondWith(caches.open(CACHE).then(async (c) => {
-      const hit = await c.match(req); if (hit) return hit;
+      const hit = await c.match(req, { ignoreVary: true }); if (hit) return hit;   // same versioned URL = same picture (webp or png)
       const r = await fetch(req); if (r.ok) c.put(req, r.clone()); return r;
     }));
   }

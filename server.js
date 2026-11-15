@@ -147,7 +147,7 @@ const SW = fs.readFileSync(path.join(PUB, "sw.js"), "utf8").replace(/__V__/g, BU
 app.get(["/", "/index.html"], (_, res) => { res.set({ "Cache-Control": "no-cache", "Content-Type": "text/html; charset=utf-8" }); res.send(INDEX); });
 app.get("/sw.js", (_, res) => { res.set({ "Cache-Control": "no-cache", "Content-Type": "text/javascript; charset=utf-8", "Service-Worker-Allowed": "/" }); res.send(SW); });
 app.use((req, res, next) => {
-  if (req.method !== "GET" || !/\.(png|jpe?g)$/i.test(req.path)) return next();
+  if ((req.method !== "GET" && req.method !== "HEAD") || !/\.(png|jpe?g)$/i.test(req.path)) return next();
   res.vary("Accept");
   if (/image\/webp/.test(req.get("accept") || "")) {
     const w = req.path.replace(/\.(png|jpe?g)$/i, ".webp");
